@@ -236,6 +236,11 @@ class OpsDashboard {
                         <div><div class="ad-tool-title">Transfer Requests</div>
                         <div class="ad-tool-desc">Cashout and Bridge settlement queue</div></div>
                     </div>
+                    <div class="ad-tool-card" data-route="/app/bridge-kyc">
+                        <div class="ad-tool-icon">BK</div>
+                        <div><div class="ad-tool-title">Bridge KYC</div>
+                        <div class="ad-tool-desc">Live Bridge KYC status for every customer</div></div>
+                    </div>
                     <div class="ad-tool-card" data-route="/app/account-management">
                         <div class="ad-tool-icon">AM</div>
                         <div><div class="ad-tool-title">Account Management</div>
