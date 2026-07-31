@@ -119,6 +119,23 @@ def test_workspace_links_the_page():
 	assert links[0]["label"] == "Bridge KYC"
 
 
+def test_customer_id_is_validated_and_percent_encoded():
+	"""customer_id comes from the browser and ends up in a URL path — without
+	UUID validation + percent-encoding, `x?limit=` or `../transfers` turns the
+	detail endpoint into a GET proxy for arbitrary Bridge API paths."""
+	assert "CUSTOMER_ID_RE = re.compile(" in BRIDGE_KYC_PY
+	assert "CUSTOMER_ID_RE.fullmatch(customer_id)" in BRIDGE_KYC_PY
+	assert "quote(str(customer_id), safe='')" in BRIDGE_CLIENT_PY.replace('"', "'")
+
+
+def test_detail_drawer_shows_linked_flash_accounts():
+	"""The shared-link data smell must survive into the detail drawer, not
+	just the table chip — the drawer is where an operator investigates."""
+	assert "detail_html(d.customer, overviewRow)" in PAGE_JS
+	assert "Linked Flash account" in PAGE_JS
+	assert "shared link" in PAGE_JS
+
+
 def test_api_key_never_reaches_the_client():
 	"""The Bridge API key stays server-side: the JS must never reference it and
 	the overview/detail payloads are built from explicit whitelisted fields."""

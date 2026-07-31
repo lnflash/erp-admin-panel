@@ -7,10 +7,16 @@ bridgeCustomerId; the detail endpoint returns one customer's full endorsement
 and missing-requirements breakdown.
 """
 
+import re
 from datetime import datetime, timezone
 
 import frappe
 from frappe.utils import cstr
+
+# Bridge customer ids are UUIDs. Validated before the id is ever placed in a
+# URL path — anything looser would let a caller reach arbitrary Bridge API
+# endpoints (query/path injection) through our key.
+CUSTOMER_ID_RE = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 
 from .auth import require_admin
 from .bridge_client import BridgeClient
@@ -43,7 +49,7 @@ def get_kyc_overview():
 def get_kyc_customer(customer_id):
 	"""One customer's live KYC detail (endorsements, missing items, rejections)."""
 	customer_id = cstr(customer_id).strip()
-	if not customer_id:
-		frappe.throw("customer_id is required")
+	if not CUSTOMER_ID_RE.fullmatch(customer_id):
+		frappe.throw("customer_id must be a Bridge customer UUID")
 	customer = BridgeClient().get_customer(customer_id)
 	return {"success": True, "now": _now_iso(), "customer": build_detail(customer)}

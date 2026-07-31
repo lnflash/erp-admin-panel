@@ -18,6 +18,7 @@ Config (site_config.json / frappe.conf):
 """
 
 import time
+from urllib.parse import quote
 
 import frappe
 import requests
@@ -89,5 +90,10 @@ class BridgeClient:
 		raise BridgeApiError(f"Bridge customer pagination exceeded {MAX_PAGES} pages")
 
 	def get_customer(self, customer_id: str) -> dict:
-		"""One customer's full record, including endorsements/requirements."""
-		return self._get(f"/customers/{customer_id}")
+		"""One customer's full record, including endorsements/requirements.
+
+		The id is percent-encoded (defense in depth — the endpoint validates
+		UUID shape first) so it can never smuggle path segments or a query
+		string into the request.
+		"""
+		return self._get(f"/customers/{quote(str(customer_id), safe='')}")

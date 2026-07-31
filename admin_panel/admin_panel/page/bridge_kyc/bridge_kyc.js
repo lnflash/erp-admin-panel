@@ -393,7 +393,10 @@ class BridgeKyc {
 					);
 					return;
 				}
-				box.find("td").html(this.detail_html(d.customer));
+				const overviewRow = (this.data.rows || []).find(
+					(r) => r.customer_id === customerId
+				);
+				box.find("td").html(this.detail_html(d.customer, overviewRow));
 			},
 			error: () =>
 				box
@@ -402,7 +405,7 @@ class BridgeKyc {
 		});
 	}
 
-	detail_html(c) {
+	detail_html(c, overviewRow) {
 		const list = (items, cls) =>
 			items && items.length
 				? `<ul>${items
@@ -424,8 +427,27 @@ class BridgeKyc {
                 </div>`;
 			})
 			.join("");
+		const usernames = (overviewRow && overviewRow.usernames) || [];
+		const flashBlock = `
+                <div class="bk-detail-block">
+                    <div class="bk-detail-title">Linked Flash account${
+						usernames.length > 1 ? "s" : ""
+					}
+                        ${
+							usernames.length > 1
+								? '<span class="bk-chip bad">shared link</span>'
+								: ""
+						}
+                    </div>
+                    ${
+						usernames.length
+							? `<ul>${usernames.map((u) => `<li>${bkEsc(u)}</li>`).join("")}</ul>`
+							: '<div class="bk-detail-empty">Not linked to a Flash account</div>'
+					}
+                </div>`;
 		return `
             <div class="bk-detail-grid">
+                ${flashBlock}
                 <div class="bk-detail-block">
                     <div class="bk-detail-title">Missing (all endorsements)</div>
                     ${list(c.missing, "")}

@@ -218,6 +218,21 @@ def test_shared_customer_link_carries_every_username():
 	assert row["usernames"] == ["real_user", "test_dupe"]
 
 
+def test_linked_account_without_username_gets_placeholder():
+	"""Accounts can lack a username; the usernames list feeds tooltips and the
+	detail drawer, so None must never leak through as 'null' / blank."""
+	acct = {
+		"bridge_customer_id": ACTIVE_INDIVIDUAL["id"],
+		"bridge_kyc_status": "approved",
+		"username": None,
+		"level": 1,
+		"status": "active",
+		"created_at": None,
+	}
+	row = build_row(ACTIVE_INDIVIDUAL, [acct])
+	assert row["usernames"] == ["(no username)"]
+
+
 def test_build_detail_summarizes_each_endorsement():
 	detail = build_detail(BUSINESS_AWAITING_UBO)
 	assert detail["missing"][0] == "associated_person: tax_identification_number"
