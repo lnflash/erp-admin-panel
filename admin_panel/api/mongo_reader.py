@@ -125,6 +125,39 @@ def _iso(dt):
 	return dt.isoformat() if dt else None
 
 
+def load_bridge_accounts() -> list:
+	"""Accounts with a Bridge customer linked, for the bridge-kyc join.
+
+	Returns [{bridge_customer_id, bridge_kyc_status, username, level, status,
+	created_at}] — one entry per account whose bridgeCustomerId is set.
+	"""
+	db = _get_db()
+	out = []
+	cursor = db.accounts.find(
+		{"bridgeCustomerId": {"$nin": [None, ""]}},
+		{
+			"bridgeCustomerId": 1,
+			"bridgeKycStatus": 1,
+			"username": 1,
+			"level": 1,
+			"statusHistory": 1,
+			"created_at": 1,
+		},
+	)
+	for doc in cursor:
+		out.append(
+			{
+				"bridge_customer_id": doc.get("bridgeCustomerId"),
+				"bridge_kyc_status": doc.get("bridgeKycStatus"),
+				"username": doc.get("username"),
+				"level": doc.get("level"),
+				"status": _latest_status(doc.get("statusHistory")),
+				"created_at": _iso(doc.get("created_at")),
+			}
+		)
+	return out
+
+
 def find_account(query: str):
 	"""Resolve a single account doc by accountId / username / phone / wallet id.
 
