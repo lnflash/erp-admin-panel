@@ -61,8 +61,50 @@ def test_js_wires_endpoint_and_gates_roles():
 
 
 def test_js_escapes_user_data():
+	"""Every `${...}` interpolation of server data must be escaped or provably safe.
+
+	Static sweep: an interpolation that references response/row data (r., d.,
+	s., f., t., counts[, this.) must run through an escaping/formatting helper
+	(esc / escape_html / rr_money / rr_ago / paidMark / Number) or be an
+	explicitly reviewed numeric expression in the allowlist below. Adding e.g.
+	`${r.contact}` unescaped fails this test.
+	"""
 	js = read_text(PAGE_DIR / "referral_rewards.js")
 	assert "frappe.utils.escape_html" in js
+
+	exprs = re.findall(r"\$\{(.*?)\}", js, re.DOTALL)
+	assert len(exprs) > 20, "interpolation sweep found suspiciously few expressions"
+
+	safe_calls = (
+		"esc(",
+		"frappe.utils.escape_html(",
+		"rr_money(",
+		"rr_ago(",
+		"paidMark(",
+		"Number(",
+	)
+	data_ref = re.compile(r"\b[rdfts]\.|counts\[|this\.")
+	# Reviewed-safe raw interpolations: numeric server fields (never strings).
+	allowed_numeric = {
+		"f.count || 0",
+		'f.conversion === null || f.conversion === undefined ? "&nbsp;" : f.conversion + "% of prev"',
+		"counts[b.key] || 0",
+		"s.rewarded || 0",
+		"s.counter_seq || 0",
+		"s.needs_reconciliation || 0",
+		"s.partial || 0",
+		"s.failed || 0",
+		"s.pending || 0",
+		"s.wallet_runway_referrals",
+		"t.count_parties",
+	}
+	for expr in exprs:
+		norm = " ".join(expr.split())
+		if not data_ref.search(norm):
+			continue
+		if any(call in norm for call in safe_calls):
+			continue
+		assert norm in allowed_numeric, f"unescaped data interpolation: ${{{norm}}}"
 
 
 def test_js_relative_time_uses_server_clock_not_local():

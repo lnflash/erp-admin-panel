@@ -49,6 +49,17 @@ def test_current_tier_empty_and_single_unbounded():
 	assert referrals_until_next_tier(0, one) is None
 
 
+def test_bounded_last_tier_pays_zero_past_bound():
+	# A misconfigured schedule with no unbounded sentinel must stop paying past
+	# its last bound rather than extending the last rate forever. Mirrors the
+	# backend referralRewardAmountCents fallthrough.
+	bounded = [{"upToCount": 100, "amountCents": 500}]
+	assert current_tier(50, bounded) == 500  # referral #51, in-bound
+	assert current_tier(99, bounded) == 500  # referral #100, last in-bound
+	assert current_tier(100, bounded) == 0  # referral #101, past the bound
+	assert current_tier(5000, bounded) == 0
+
+
 # ── build_overview ─────────────────────────────────────────────────────────
 
 
@@ -60,6 +71,8 @@ def _fixture():
 		"acc-dan": {"username": "dan"},
 		"acc-erin": {"username": "erin"},
 		"acc-frank": {"username": "frank"},
+		"acc-gina": {"username": "gina"},
+		"acc-hugo": {"username": "hugo"},
 	}
 	invites = [
 		# fully paid, tier $5 — both parties paid
@@ -158,6 +171,40 @@ def _fixture():
 			"invitee_rewarded_at": None,
 			"reward_error": None,
 		},
+		# sent, then expired unredeemed — stays in the "sent" funnel denominator
+		{
+			"invite_id": "i7",
+			"status": "EXPIRED",
+			"inviter_id": "acc-bob",
+			"redeemed_by_id": None,
+			"contact": "expired@x.com",
+			"reward_status": None,
+			"reward_seq": None,
+			"reward_amount_cents": None,
+			"redeemed_at": None,
+			"rewarded_at": None,
+			"inviter_rewarded_at": None,
+			"invitee_rewarded_at": None,
+			"reward_error": None,
+		},
+		# pending payout — IBEX accepted both sends, confirmation outstanding.
+		# Backend sets per-party timestamps (fail-closed) but rewardStatus stays
+		# "pending" until re-checked.
+		{
+			"invite_id": "i8",
+			"status": "ACCEPTED",
+			"inviter_id": "acc-gina",
+			"redeemed_by_id": "acc-hugo",
+			"contact": "hugo@x.com",
+			"reward_status": "pending",
+			"reward_seq": 5,
+			"reward_amount_cents": 500,
+			"redeemed_at": "2026-07-27T10:00:00",
+			"rewarded_at": None,
+			"inviter_rewarded_at": "2026-07-27T12:00:00",
+			"invitee_rewarded_at": "2026-07-27T12:00:00",
+			"reward_error": "inviter=pending invitee=pending",
+		},
 	]
 	return invites, accounts
 
@@ -167,18 +214,19 @@ def test_summary_counts_and_disbursement():
 	out = build_overview(invites, accounts, counter_seq=150, wallet_balance=100.0)
 	s = out["summary"]
 
-	assert s["total_invites"] == 6
-	assert s["sent"] == 5  # i1..i4 accepted + i5 sent = 5 that were >= SENT
-	assert s["accepted"] == 4  # i1..i4
-	assert s["rewarded"] == 2  # paid + partial (i1, i2)
+	assert s["total_invites"] == 8
+	assert s["sent"] == 7  # everything except the never-sent PENDING i6
+	assert s["accepted"] == 5  # i1..i4 + i8
+	assert s["rewarded"] == 3  # paid + partial + pending (i1, i2, i8)
 	assert s["paid"] == 1
 	assert s["partial"] == 1
 	assert s["failed"] == 1
 	assert s["processing"] == 0
-	assert s["needs_reconciliation"] == 2  # partial + failed
+	assert s["pending"] == 1
+	assert s["needs_reconciliation"] == 3  # partial + failed + pending
 
-	# disbursed: i1 both parties @ $5 = $10; i2 one party @ $2.50 = $2.50; i3 none.
-	assert s["total_disbursed_dollars"] == 12.50
+	# disbursed: i1 both @ $5 = $10; i2 one @ $2.50 = $2.50; i8 both @ $5 = $10.
+	assert s["total_disbursed_dollars"] == 22.50
 
 	# tier state at seq 150 -> next referral (#151) is in the $2.50 band.
 	assert s["counter_seq"] == 150
@@ -189,13 +237,25 @@ def test_summary_counts_and_disbursement():
 	assert s["wallet_runway_referrals"] == 20
 
 
+def test_expired_counts_as_sent_not_accepted():
+	invites, accounts = _fixture()
+	out = build_overview(invites, accounts, counter_seq=0)
+	funnel = {f["stage"]: f for f in out["funnel"]}
+
+	# i7 (EXPIRED) stays in the Sent denominator so Accepted% isn't inflated,
+	# but never counts as Accepted and never appears in the table.
+	assert funnel["Sent"]["count"] == 7
+	assert funnel["Accepted"]["count"] == 5
+	assert "i7" not in {r["invite_id"] for r in out["rows"]}
+
+
 def test_disbursed_by_tier():
 	invites, accounts = _fixture()
 	out = build_overview(invites, accounts, counter_seq=0)
 	tiers = {t["amount_dollars"]: t for t in out["summary"]["disbursed_by_tier"]}
-	# $5 tier: i1 paid 2 parties = $10
-	assert tiers[5.0]["count_parties"] == 2
-	assert tiers[5.0]["dollars"] == 10.0
+	# $5 tier: i1 (2 parties) + i8 pending (2 parties, timestamps set) = $20
+	assert tiers[5.0]["count_parties"] == 4
+	assert tiers[5.0]["dollars"] == 20.0
 	# $2.50 tier: i2 paid 1 party = $2.50
 	assert tiers[2.5]["count_parties"] == 1
 	assert tiers[2.5]["dollars"] == 2.5
@@ -206,9 +266,9 @@ def test_rows_only_accepted_join_usernames_and_flags():
 	out = build_overview(invites, accounts, counter_seq=0)
 	rows = out["rows"]
 
-	# Only the 4 ACCEPTED invites appear (SENT/PENDING excluded).
-	assert len(rows) == 4
-	assert {r["invite_id"] for r in rows} == {"i1", "i2", "i3", "i4"}
+	# Only the 5 ACCEPTED invites appear (SENT/PENDING/EXPIRED excluded).
+	assert len(rows) == 5
+	assert {r["invite_id"] for r in rows} == {"i1", "i2", "i3", "i4", "i8"}
 
 	# Newest-redeemed first.
 	assert rows[0]["invite_id"] == "i4"
@@ -226,6 +286,27 @@ def test_rows_only_accepted_join_usernames_and_flags():
 	# unrewarded-but-accepted surfaces with status "unrewarded"
 	assert by_id["i4"]["reward_status"] == "unrewarded"
 	assert by_id["i4"]["reward_amount_dollars"] is None
+	# pending: both party timestamps set, status stays "pending"
+	assert by_id["i8"]["reward_status"] == "pending"
+	assert by_id["i8"]["inviter_paid"] is True
+	assert by_id["i8"]["invitee_paid"] is True
+
+
+def test_row_cap_truncates_rows_but_not_summary():
+	invites, accounts = _fixture()
+	out = build_overview(invites, accounts, counter_seq=0, max_rows=2)
+
+	# Rows capped to the newest 2; the summary still covers everything.
+	assert [r["invite_id"] for r in out["rows"]] == ["i4", "i1"]
+	assert out["summary"]["rows_total"] == 5
+	assert out["summary"]["rows_shown"] == 2
+	assert out["summary"]["accepted"] == 5
+	assert out["summary"]["total_disbursed_dollars"] == 22.50
+
+	# Uncapped run reports full counts.
+	full = build_overview(invites, accounts, counter_seq=0)
+	assert full["summary"]["rows_total"] == 5
+	assert full["summary"]["rows_shown"] == 5
 
 
 def test_funnel_counts_and_conversion():
@@ -233,14 +314,14 @@ def test_funnel_counts_and_conversion():
 	out = build_overview(invites, accounts, counter_seq=0)
 	funnel = {f["stage"]: f for f in out["funnel"]}
 
-	assert funnel["Invited"]["count"] == 6
-	assert funnel["Sent"]["count"] == 5
-	assert funnel["Accepted"]["count"] == 4
-	assert funnel["Rewarded"]["count"] == 2
+	assert funnel["Invited"]["count"] == 8
+	assert funnel["Sent"]["count"] == 7
+	assert funnel["Accepted"]["count"] == 5
+	assert funnel["Rewarded"]["count"] == 3
 	assert funnel["Invited"]["conversion"] is None
-	assert funnel["Sent"]["conversion"] == 83.3  # 5 sent / 6 invited
-	assert funnel["Accepted"]["conversion"] == 80.0  # 4 accepted / 5 sent
-	assert funnel["Rewarded"]["conversion"] == 50.0  # 2 rewarded / 4 accepted
+	assert funnel["Sent"]["conversion"] == 87.5  # 7 sent / 8 invited
+	assert funnel["Accepted"]["conversion"] == 71.4  # 5 accepted / 7 sent
+	assert funnel["Rewarded"]["conversion"] == 60.0  # 3 rewarded / 5 accepted
 
 
 def test_wallet_balance_none_yields_no_runway():

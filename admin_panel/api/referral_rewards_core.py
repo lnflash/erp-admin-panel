@@ -10,15 +10,23 @@ Data comes from the Flash `invites` collection (reward-payout fields) joined to
 
 # Tiered per-party reward schedule, in USD cents, by cumulative referral count.
 # KEEP IN SYNC with the flash backend `referralReward.tiers` config
-# (flash/src/config/schema.ts). `upToCount <= 0` marks the final unbounded tier.
+# (flash/src/config/schema.ts) AND `referralRewardAmountCents`
+# (flash/src/domain/invite/referral-reward.ts): `upToCount <= 0` marks the
+# final unbounded tier; past every bounded tier the amount is the last tier's
+# only when that tier is unbounded, else 0 (a schedule missing the sentinel
+# stops paying rather than silently extending the last bounded rate forever).
 REWARD_TIERS = [
 	{"upToCount": 100, "amountCents": 500},
 	{"upToCount": 600, "amountCents": 250},
 	{"upToCount": 0, "amountCents": 100},
 ]
 
-# rewardStatus values that count as (at least partially) paid out.
-PAID_STATUSES = {"paid", "partial"}
+# rewardStatus values where money (at least partly) went out the door.
+# "pending" = an IBEX payment accepted but not yet confirmed — the backend sets
+# the per-party timestamps for pending parties (fail-closed, no double-pay) and
+# the status needs ops re-checking, so it counts as rewarded AND as
+# needs-reconciliation.
+REWARDED_STATUSES = {"paid", "partial", "pending"}
 
 
 def _tier_amount_cents(tiers, seq):
@@ -27,7 +35,12 @@ def _tier_amount_cents(tiers, seq):
 		up_to = tier.get("upToCount", 0)
 		if up_to > 0 and seq <= up_to:
 			return tier.get("amountCents", 0)
-	return tiers[-1].get("amountCents", 0) if tiers else 0
+	if not tiers:
+		return 0
+	last = tiers[-1]
+	# Past every bounded tier: pay the final tier only if it is explicitly
+	# unbounded. Mirrors the backend's referralRewardAmountCents fallthrough.
+	return last.get("amountCents", 0) if last.get("upToCount", 0) <= 0 else 0
 
 
 def current_tier(seq, tiers=REWARD_TIERS):
@@ -49,7 +62,7 @@ def _pct(n, d):
 	return round(100.0 * n / d, 1) if d else None
 
 
-def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_balance=None):
+def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_balance=None, max_rows=200):
 	"""Join invites to accounts and roll up the referral-reward picture.
 
 	Args:
@@ -58,11 +71,13 @@ def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_ba
 	    counter_seq: int, the global referral sequence so far.
 	    tiers: the reward schedule.
 	    wallet_balance: live USD balance of the funding wallet, or None.
+	    max_rows: cap on the returned row list (newest first); the summary
+	        aggregates still cover every invite. None = no cap.
 
 	Returns {rows, summary, funnel}, all JSON-serializable.
 	"""
 	rows = []
-	status_counts = {"paid": 0, "partial": 0, "failed": 0, "processing": 0}
+	status_counts = {"paid": 0, "partial": 0, "failed": 0, "processing": 0, "pending": 0}
 	total_invites = len(invites)
 	sent = 0
 	accepted = 0
@@ -74,11 +89,15 @@ def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_ba
 		status = inv.get("status")
 		reward_status = inv.get("reward_status")
 
-		if status in ("SENT", "ACCEPTED"):
+		# EXPIRED invites were (almost always) sent first — the backend flips
+		# SENT -> EXPIRED on a post-expiry redemption attempt or admin revoke —
+		# so they stay in the "sent" denominator to keep Accepted% honest. The
+		# rare PENDING -> EXPIRED admin-revoke slightly overcounts "sent".
+		if status in ("SENT", "ACCEPTED", "EXPIRED"):
 			sent += 1
 		if status == "ACCEPTED":
 			accepted += 1
-		if reward_status in PAID_STATUSES:
+		if reward_status in REWARDED_STATUSES:
 			rewarded += 1
 		if reward_status in status_counts:
 			status_counts[reward_status] += 1
@@ -120,6 +139,9 @@ def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_ba
 			)
 
 	rows.sort(key=lambda r: (r.get("redeemed_at") or ""), reverse=True)
+	rows_total = len(rows)
+	if max_rows is not None and rows_total > max_rows:
+		rows = rows[:max_rows]
 
 	current_tier_cents = current_tier(counter_seq, tiers)
 	current_tier_dollars = current_tier_cents / 100.0
@@ -146,7 +168,10 @@ def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_ba
 		"partial": status_counts["partial"],
 		"failed": status_counts["failed"],
 		"processing": status_counts["processing"],
-		"needs_reconciliation": status_counts["partial"] + status_counts["failed"],
+		"pending": status_counts["pending"],
+		"needs_reconciliation": (
+			status_counts["partial"] + status_counts["failed"] + status_counts["pending"]
+		),
 		"total_disbursed_dollars": round(total_disbursed_cents / 100.0, 2),
 		"disbursed_by_tier": tier_breakdown,
 		"counter_seq": counter_seq or 0,
@@ -154,6 +179,8 @@ def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_ba
 		"referrals_until_next_tier": referrals_until_next_tier(counter_seq, tiers),
 		"wallet_balance_dollars": wallet_balance,
 		"wallet_runway_referrals": runway,
+		"rows_total": rows_total,
+		"rows_shown": len(rows),
 	}
 
 	funnel = [

@@ -16,16 +16,19 @@ from .referral_rewards_core import REWARD_TIERS, build_overview
 
 __all__ = ["build_overview", "get_referral_rewards"]
 
-# Currency labels a USD/USDT wallet may carry in mongo (casing varies by era).
-_USD_CURRENCIES = ["USD", "Usd", "USDT", "Usdt"]
+# The backend payout funds from the rewards account's USDT wallet first, then
+# USD (flash/src/app/invite/award-referral-reward.ts pickPayoutWallet). Mirror
+# that exact preference so the balance shown is the wallet payouts draw from.
+_PAYOUT_CURRENCY_PREFERENCE = ("USDT", "USD")
 
 
 def _rewards_wallet_balance():
-	"""Best-effort live USD balance of the funding ('rewards' role) wallet.
+	"""Best-effort live balance of the funding ('rewards' role) wallet.
 
-	Resolves the account holding role="rewards", picks a USD/USDT wallet, and
-	asks IBEX for the balance. Returns None if anything isn't configured or
-	available — the page must never break because of the balance lookup.
+	Resolves the account holding role="rewards", picks its payout wallet with
+	the same USDT-then-USD preference as the backend, and asks IBEX for the
+	balance. Returns None if anything isn't configured or available — the page
+	must never break because of the balance lookup.
 	"""
 	from .mongo_reader import _get_db
 
@@ -34,10 +37,14 @@ def _rewards_wallet_balance():
 		account = db.accounts.find_one({"role": "rewards"}, {"_id": 1, "defaultWalletId": 1})
 		if not account:
 			return None
-		wallet = db.wallets.find_one(
-			{"_accountId": account["_id"], "currency": {"$in": _USD_CURRENCIES}},
-			{"id": 1},
-		)
+		wallet = None
+		for currency in _PAYOUT_CURRENCY_PREFERENCE:
+			wallet = db.wallets.find_one(
+				{"_accountId": account["_id"], "currency": currency},
+				{"id": 1},
+			)
+			if wallet and wallet.get("id"):
+				break
 		if not wallet or not wallet.get("id"):
 			return None
 		details = IbexClient().get_account_details(wallet["id"])

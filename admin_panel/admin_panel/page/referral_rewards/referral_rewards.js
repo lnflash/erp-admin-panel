@@ -5,6 +5,7 @@ const RR_ALLOWED_ROLES = ["Accounts Manager", "Flash Admin", "System Manager"];
 const RR_BUCKETS = [
 	{ key: "all", label: "All" },
 	{ key: "paid", label: "Paid" },
+	{ key: "pending", label: "Pending" },
 	{ key: "partial", label: "Partial" },
 	{ key: "failed", label: "Failed" },
 	{ key: "processing", label: "Processing" },
@@ -13,6 +14,9 @@ const RR_BUCKETS = [
 
 const RR_STATUS_TONE = {
 	paid: "ok",
+	// "pending" = IBEX accepted the payment but hasn't confirmed it — money
+	// probably moved; ops must re-check, so it tones as a warning.
+	pending: "warn",
 	partial: "warn",
 	failed: "bad",
 	processing: "warn",
@@ -189,8 +193,18 @@ class ReferralRewards {
 				this.summary = d.summary || {};
 				this.funnel = d.funnel || [];
 				this.now = d.now || null;
+				const rowsTotal =
+					this.summary.rows_total === undefined
+						? this.rows.length
+						: this.summary.rows_total;
+				const rowsShown =
+					this.summary.rows_shown === undefined
+						? this.rows.length
+						: this.summary.rows_shown;
+				const capNote =
+					rowsShown < rowsTotal ? ` (showing latest ${rowsShown} of ${rowsTotal})` : "";
 				this.set_status(
-					`Live view — ${this.rows.length} redeemed referrals. Updated ${rr_ago(
+					`Live view — ${rowsTotal} redeemed referrals${capNote}. Updated ${rr_ago(
 						this.now,
 						this.now
 					)}.`
@@ -236,13 +250,19 @@ class ReferralRewards {
 					rr_money(s.total_disbursed_dollars),
 					`${s.rewarded || 0} referrals rewarded`
 				) +
-					tile("Referrals Paid", `${s.counter_seq || 0}`, "counted toward tiers") +
+					tile(
+						"Referrals Counted",
+						`${s.counter_seq || 0}`,
+						"tier-consuming attempts (incl. failed)"
+					) +
 					tile("Current Tier", rr_money(s.current_tier_dollars), nextSub) +
 					tile("Rewards Wallet", walletVal, walletSub) +
 					tile(
 						"Needs Reconciliation",
 						`${s.needs_reconciliation || 0}`,
-						`${s.partial || 0} partial / ${s.failed || 0} failed`,
+						`${s.partial || 0} partial / ${s.failed || 0} failed / ${
+							s.pending || 0
+						} pending`,
 						(s.needs_reconciliation || 0) > 0
 							? { tile: "alert-tile", value: "bad" }
 							: null
@@ -282,6 +302,7 @@ class ReferralRewards {
 		const counts = {
 			all: this.rows.length,
 			paid: this.summary.paid || 0,
+			pending: this.summary.pending || 0,
 			partial: this.summary.partial || 0,
 			failed: this.summary.failed || 0,
 			processing: this.summary.processing || 0,
