@@ -141,3 +141,9 @@ def test_api_key_never_reaches_the_client():
 	the overview/detail payloads are built from explicit whitelisted fields."""
 	assert "bridge_api_key" not in PAGE_JS
 	assert "api_key" not in PAGE_JS
+
+
+def test_admin_dashboard_tools_grid_links_the_page():
+	dashboard_js = read(ADMIN_PANEL / "admin_panel" / "page" / "admin_dashboard" / "admin_dashboard.js")
+	assert 'data-route="/app/bridge-kyc"' in dashboard_js
+	assert 'ad-tool-title">Bridge KYC' in dashboard_js
