@@ -106,7 +106,10 @@ function rr_ago(iso, nowIso) {
 
 function rr_money(v) {
 	if (v === null || v === undefined) return "—";
-	return `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+	return `$${Number(v).toLocaleString(undefined, {
+		minimumFractionDigits: 2,
+		maximumFractionDigits: 2,
+	})}`;
 }
 
 frappe.pages["referral-rewards"].on_page_load = function (wrapper) {
@@ -175,20 +178,30 @@ class ReferralRewards {
 			callback: (res) => {
 				const d = res.message || {};
 				if (d.success === false) {
-					this.set_status(`<span class="err">${frappe.utils.escape_html(d.error || "Failed to load")}</span>`);
+					this.set_status(
+						`<span class="err">${frappe.utils.escape_html(
+							d.error || "Failed to load"
+						)}</span>`
+					);
 					return;
 				}
 				this.rows = d.rows || [];
 				this.summary = d.summary || {};
 				this.funnel = d.funnel || [];
 				this.now = d.now || null;
-				this.set_status(`Live view — ${this.rows.length} redeemed referrals. Updated ${rr_ago(this.now, this.now)}.`);
+				this.set_status(
+					`Live view — ${this.rows.length} redeemed referrals. Updated ${rr_ago(
+						this.now,
+						this.now
+					)}.`
+				);
 				this.render_summary();
 				this.render_funnel();
 				this.render_buckets();
 				this.render_table();
 			},
-			error: () => this.set_status(`<span class="err">Failed to load referral rewards.</span>`),
+			error: () =>
+				this.set_status(`<span class="err">Failed to load referral rewards.</span>`),
 		});
 	}
 
@@ -215,23 +228,35 @@ class ReferralRewards {
 				? "funding wallet"
 				: `~${s.wallet_runway_referrals} more referrals`;
 
-		this.page.main.find("#rr-summary").html(
-			tile("Total Disbursed", rr_money(s.total_disbursed_dollars), `${s.rewarded || 0} referrals rewarded`) +
-				tile("Referrals Paid", `${s.counter_seq || 0}`, "counted toward tiers") +
-				tile("Current Tier", rr_money(s.current_tier_dollars), nextSub) +
-				tile("Rewards Wallet", walletVal, walletSub) +
+		this.page.main
+			.find("#rr-summary")
+			.html(
 				tile(
-					"Needs Reconciliation",
-					`${s.needs_reconciliation || 0}`,
-					`${s.partial || 0} partial / ${s.failed || 0} failed`,
-					(s.needs_reconciliation || 0) > 0 ? { tile: "alert-tile", value: "bad" } : null
+					"Total Disbursed",
+					rr_money(s.total_disbursed_dollars),
+					`${s.rewarded || 0} referrals rewarded`
 				) +
-				(s.disbursed_by_tier || [])
-					.map((t) =>
-						tile(`Tier ${rr_money(t.amount_dollars)}`, rr_money(t.dollars), `${t.count_parties} payouts`)
-					)
-					.join("")
-		);
+					tile("Referrals Paid", `${s.counter_seq || 0}`, "counted toward tiers") +
+					tile("Current Tier", rr_money(s.current_tier_dollars), nextSub) +
+					tile("Rewards Wallet", walletVal, walletSub) +
+					tile(
+						"Needs Reconciliation",
+						`${s.needs_reconciliation || 0}`,
+						`${s.partial || 0} partial / ${s.failed || 0} failed`,
+						(s.needs_reconciliation || 0) > 0
+							? { tile: "alert-tile", value: "bad" }
+							: null
+					) +
+					(s.disbursed_by_tier || [])
+						.map((t) =>
+							tile(
+								`Tier ${rr_money(t.amount_dollars)}`,
+								rr_money(t.dollars),
+								`${t.count_parties} payouts`
+							)
+						)
+						.join("")
+			);
 	}
 
 	render_funnel() {
@@ -242,7 +267,11 @@ class ReferralRewards {
             <div class="rr-funnel-step">
                 <div class="l">${frappe.utils.escape_html(f.stage)}</div>
                 <div class="n">${f.count || 0}</div>
-                <div class="c">${f.conversion === null || f.conversion === undefined ? "&nbsp;" : f.conversion + "% of prev"}</div>
+                <div class="c">${
+					f.conversion === null || f.conversion === undefined
+						? "&nbsp;"
+						: f.conversion + "% of prev"
+				}</div>
             </div>`
 				)
 				.join("")
@@ -260,7 +289,9 @@ class ReferralRewards {
 		};
 		const html = RR_BUCKETS.map((b) => {
 			const active = b.key === this.active_bucket ? " active" : "";
-			return `<button class="rr-bucket${active}" data-bucket="${b.key}">${b.label} <span class="badge">${counts[b.key] || 0}</span></button>`;
+			return `<button class="rr-bucket${active}" data-bucket="${b.key}">${
+				b.label
+			} <span class="badge">${counts[b.key] || 0}</span></button>`;
 		}).join("");
 		const el = this.page.main.find("#rr-buckets");
 		el.html(html);
@@ -278,18 +309,30 @@ class ReferralRewards {
 
 	render_table() {
 		const rows = this.filtered_rows();
-		const esc = (v) => frappe.utils.escape_html(String(v === null || v === undefined || v === "" ? "—" : v));
-		const paidMark = (b) => (b ? '<span class="rr-yes">✓</span>' : '<span class="rr-no">✗</span>');
+		const esc = (v) =>
+			frappe.utils.escape_html(String(v === null || v === undefined || v === "" ? "—" : v));
+		const paidMark = (b) =>
+			b ? '<span class="rr-yes">✓</span>' : '<span class="rr-no">✗</span>';
 		const body = rows
 			.map((r) => {
 				const tone = RR_STATUS_TONE[r.reward_status] || "";
-				const err = r.reward_error ? `<div class="rr-err">${esc(r.reward_error)}</div>` : "";
+				const err = r.reward_error
+					? `<div class="rr-err">${esc(r.reward_error)}</div>`
+					: "";
 				return `
             <tr>
                 <td>${esc(r.invitee)}</td>
                 <td>${esc(r.inviter)}</td>
-                <td style="text-align:right">${r.reward_amount_dollars === null || r.reward_amount_dollars === undefined ? "—" : rr_money(r.reward_amount_dollars)}</td>
-                <td>${r.reward_seq === null || r.reward_seq === undefined ? "—" : "#" + esc(r.reward_seq)}</td>
+                <td style="text-align:right">${
+					r.reward_amount_dollars === null || r.reward_amount_dollars === undefined
+						? "—"
+						: rr_money(r.reward_amount_dollars)
+				}</td>
+                <td>${
+					r.reward_seq === null || r.reward_seq === undefined
+						? "—"
+						: "#" + esc(r.reward_seq)
+				}</td>
                 <td><span class="rr-chip-st ${tone}">${esc(r.reward_status)}</span>${err}</td>
                 <td style="text-align:center">${paidMark(r.inviter_paid)}</td>
                 <td style="text-align:center">${paidMark(r.invitee_paid)}</td>
@@ -299,7 +342,9 @@ class ReferralRewards {
 			.join("");
 		this.page.main.find("#rr-table").html(`
             <div class="rr-card">
-                <div class="rr-count">Showing ${rows.length} referral${rows.length === 1 ? "" : "s"}</div>
+                <div class="rr-count">Showing ${rows.length} referral${
+			rows.length === 1 ? "" : "s"
+		}</div>
                 <div style="overflow-x:auto">
                     <table class="rr-table">
                         <thead><tr>
