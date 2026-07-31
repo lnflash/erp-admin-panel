@@ -47,9 +47,9 @@ def test_pagination_terminates_only_on_empty_page():
 	sizes and short-page inference truncated the first wallet census)."""
 	assert "if not batch:" in BRIDGE_CLIENT_PY
 	assert "MAX_PAGES" in BRIDGE_CLIENT_PY
-	assert not re.search(r"len\(batch\)\s*<", BRIDGE_CLIENT_PY), (
-		"bridge_client must not infer end-of-data from a short page"
-	)
+	assert not re.search(
+		r"len\(batch\)\s*<", BRIDGE_CLIENT_PY
+	), "bridge_client must not infer end-of-data from a short page"
 	assert "< PAGE_LIMIT" not in BRIDGE_CLIENT_PY
 
 
