@@ -69,3 +69,66 @@ def test_bridge_banking_paths_are_percent_encoded():
 
 def test_bridge_customer_id_validated_before_use():
 	assert "CUSTOMER_ID_RE.fullmatch(customer_id)" in BANKING_PY
+
+
+# ---- Editable Banking tab (admin write endpoints) ---------------------------
+
+
+def test_write_endpoints_are_whitelisted_and_admin_gated():
+	"""Bank-account writes move real cashout rails — whitelist alone would let
+	any logged-in user redirect a customer's payouts."""
+	for fn in ("add_bank_account", "update_bank_account", "set_default_bank_account"):
+		stack = f"@frappe.whitelist()\n@require_admin()\n@handle_api_errors\ndef {fn}("
+		assert stack in BANKING_PY, f"{fn} is missing the whitelist/require_admin/handle_api_errors stack"
+
+
+def test_writes_verify_ownership_before_touching_records():
+	"""Every mutation resolves the record through the single ownership gate
+	(mirror of Cashout.validate): party_type Customer + party must match."""
+	assert 'bank_account.party_type != "Customer" or bank_account.party != erp_party' in BANKING_PY
+	assert BANKING_PY.count("_owned_bank_account(") >= 3  # definition + update + set_default
+
+
+def test_writes_enforce_cashout_safe_fields():
+	"""flash's bankAccounts GraphQL has NonNull fields and cashout only accepts
+	JMD/USD + Chequing/Savings — a single bad value blanks the customer's whole
+	bank list in the app, so every write goes through the validator."""
+	assert 'ALLOWED_CURRENCIES = ("JMD", "USD")' in BANKING_PY
+	assert 'ALLOWED_ACCOUNT_TYPES = ("Chequing", "Savings")' in BANKING_PY
+	assert BANKING_PY.count("_validate_bank_fields(") >= 3  # definition + add + update
+
+
+def test_account_number_collisions_rejected():
+	assert 'frappe.db.exists("Bank Account", {"bank_account_no": account_number})' in BANKING_PY
+	assert '"bank_account_no": account_number, "name": ("!=", bank_account.name)' in BANKING_PY
+
+
+def test_update_never_touches_identity_or_default():
+	"""Mirror of the ENG-509 approve flow: an edit patches details in place —
+	the doc name and is_default flag are owned by other flows."""
+	body = BANKING_PY.split("def update_bank_account(", 1)[1].split("@frappe.whitelist()", 1)[0]
+	assert ".is_default" not in body
+	assert "is_default =" not in body
+	assert '"is_default"' not in body
+	assert "rename" not in body
+
+
+def test_every_write_is_audited():
+	assert BANKING_PY.count("audit_log(") >= 3
+	for action in ("add_bank_account", "update_bank_account", "set_default_bank_account"):
+		assert f'"{action}"' in BANKING_PY, f"audit_log entry for {action} missing"
+	assert "from .auth import audit_log, require_admin" in BANKING_PY
+
+
+def test_bank_master_created_before_linking():
+	"""Mirror of _create_erp_records — linking to a missing Bank master fails."""
+	assert BANKING_PY.count("_ensure_bank_master(") >= 3  # definition + add + update
+
+
+def test_js_wires_banking_write_endpoints_and_buttons():
+	for method in ("add_bank_account", "update_bank_account", "set_default_bank_account"):
+		assert f"admin_panel.api.banking.{method}" in ACCOUNT_HUB_JS
+	for hook in ("banking-add-btn", "banking-edit-btn", "banking-default-btn"):
+		assert hook in ACCOUNT_HUB_JS
+	# Mutations repaint the Banking tab, not the whole account.
+	assert "this.populate_banking(account);" in ACCOUNT_HUB_JS
