@@ -337,5 +337,3 @@ def load_reward_counter() -> int:
 	db = _get_db()
 	doc = db.referralrewardcounters.find_one({"_id": "referral_reward"})
 	return int(doc.get("seq", 0)) if doc else 0
-
-
