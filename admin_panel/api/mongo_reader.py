@@ -181,6 +181,12 @@ def find_account(query: str):
 	if acct:
 		return acct
 
+	# GraphQL exposes the account uuid (accounts.id), not the mongo _id —
+	# accept it so callers can pass either.
+	acct = db.accounts.find_one({"id": query})
+	if acct:
+		return acct
+
 	# Support pastes of formatted numbers ("876 555-1234", "(876) 5551234"):
 	# try the raw query, a compacted form, and a "+"-prefixed compacted form.
 	compact = re.sub(r"[\s\-().]", "", query)

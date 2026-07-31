@@ -17,6 +17,7 @@ Config (site_config.json / frappe.conf):
   bridge_api_url  (optional, default production https://api.bridge.xyz/v0)
 """
 
+import re
 import time
 from urllib.parse import quote
 
@@ -34,6 +35,11 @@ RATE_LIMIT_BACKOFF_SECONDS = 2.0
 MAX_PAGES = 200
 
 _DEFAULT_API_URL = "https://api.bridge.xyz/v0"
+
+# Bridge customer ids are UUIDs. Endpoints validate against this before an id
+# is ever placed in a URL path — anything looser would let a caller reach
+# arbitrary Bridge API endpoints (query/path injection) through our key.
+CUSTOMER_ID_RE = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 
 _session = None
 
@@ -97,3 +103,13 @@ class BridgeClient:
 		string into the request.
 		"""
 		return self._get(f"/customers/{quote(str(customer_id), safe='')}")
+
+	def list_virtual_accounts(self, customer_id: str) -> list:
+		"""A customer's Bridge virtual accounts (US deposit instructions)."""
+		encoded = quote(str(customer_id), safe="")
+		return self._get(f"/customers/{encoded}/virtual_accounts").get("data") or []
+
+	def list_external_accounts(self, customer_id: str) -> list:
+		"""A customer's linked external bank accounts (Plaid/Bridge)."""
+		encoded = quote(str(customer_id), safe="")
+		return self._get(f"/customers/{encoded}/external_accounts").get("data") or []

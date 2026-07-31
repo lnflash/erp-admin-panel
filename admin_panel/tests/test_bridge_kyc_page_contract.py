@@ -123,7 +123,7 @@ def test_customer_id_is_validated_and_percent_encoded():
 	"""customer_id comes from the browser and ends up in a URL path — without
 	UUID validation + percent-encoding, `x?limit=` or `../transfers` turns the
 	detail endpoint into a GET proxy for arbitrary Bridge API paths."""
-	assert "CUSTOMER_ID_RE = re.compile(" in BRIDGE_KYC_PY
+	assert "CUSTOMER_ID_RE = re.compile(" in BRIDGE_CLIENT_PY
 	assert "CUSTOMER_ID_RE.fullmatch(customer_id)" in BRIDGE_KYC_PY
 	assert "quote(str(customer_id), safe='')" in BRIDGE_CLIENT_PY.replace('"', "'")
 

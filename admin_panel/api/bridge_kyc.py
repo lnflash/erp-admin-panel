@@ -7,19 +7,13 @@ bridgeCustomerId; the detail endpoint returns one customer's full endorsement
 and missing-requirements breakdown.
 """
 
-import re
 from datetime import datetime, timezone
 
 import frappe
 from frappe.utils import cstr
 
-# Bridge customer ids are UUIDs. Validated before the id is ever placed in a
-# URL path — anything looser would let a caller reach arbitrary Bridge API
-# endpoints (query/path injection) through our key.
-CUSTOMER_ID_RE = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
-
 from .auth import require_admin
-from .bridge_client import BridgeClient
+from .bridge_client import CUSTOMER_ID_RE, BridgeClient
 from .bridge_kyc_core import build_detail, build_overview
 from .common import handle_api_errors
 from .mongo_reader import load_bridge_accounts
