@@ -1,0 +1,14 @@
+{
+ "content": null,
+ "creation": "2026-07-31 12:00:00",
+ "docstatus": 0,
+ "doctype": "Page",
+ "module": "Admin Panel",
+ "name": "bridge-kyc",
+ "owner": "Administrator",
+ "page_name": "bridge-kyc",
+ "roles": [],
+ "standard": "Yes",
+ "system_page": 0,
+ "title": "Bridge KYC"
+}

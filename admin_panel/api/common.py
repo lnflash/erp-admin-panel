@@ -5,6 +5,7 @@ import functools
 import frappe
 import requests
 
+from .bridge_client import BridgeApiError
 from .graphql_client import GraphQLError
 from .ibex_client import IbexError
 
@@ -21,7 +22,7 @@ def handle_api_errors(func):
 			# let frappe's normal messaging surface them instead of masking
 			# them as a generic internal error.
 			raise
-		except (GraphQLError, IbexError) as e:
+		except (GraphQLError, IbexError, BridgeApiError) as e:
 			frappe.logger().error(f"Upstream API error in {func.__name__}: {e}")
 			frappe.response["http_status_code"] = 500
 			return {"success": False, "error": str(e)}

@@ -10,38 +10,47 @@ def source():
 	return ACCOUNT_HUB_JS.read_text()
 
 
-def test_account_hub_defines_contains_style_default_list_search_helper():
+def test_filter_local_list_contains_matches_all_identity_fields():
+	"""The default list filters inline with case-insensitive contains-matching
+	across username / phone / email / account id, and an empty query restores
+	the full list."""
 	js = source()
+	body = js.split("filter_local_list(query) {", 1)[1].split("\n\t}", 1)[0]
+	assert "this.render_result_list(this.default_results)" in body
+	for field in ("username", "phone_number", "email", "name"):
+		assert f"r.{field}" in body, f"filter must match on {field}"
+	assert body.count(".toLowerCase().includes(q)") == 4
 
-	assert "function accountMatchesSearch" in js
-	assert re.search(r"username[^\n]+email", js, re.DOTALL)
-	assert ".includes(normalizedQuery)" in js
-	assert "normalizePhoneSearchValue" in js
 
-
-def test_search_input_filters_default_list_inline_without_remote_api_debounce():
+def test_search_input_filters_inline_and_debounces_remote_exact_search():
+	"""Typing filters the local default list instantly; the remote exact search
+	runs only behind the debounce so keystrokes never spam the API. Both paths
+	are load-bearing: local for responsiveness, remote for accounts that are
+	not in the default list."""
 	js = source()
-
-	input_handler_match = re.search(
-		r"searchInput\.on\('input', \(\) => \{(?P<body>.*?)\n\s*\}\);",
+	handler = re.search(
+		r'searchInput\.on\("input", \(\) => \{(?P<body>.*?)\n\t\t\}\);',
 		js,
 		re.DOTALL,
 	)
-	assert input_handler_match, "Expected Account Hub search input handler"
-
-	body = input_handler_match.group("body")
-	assert "filter_local_list" in body
-	assert "debouncedSearch" not in body
-	assert "perform_search" not in body
+	assert handler, "Expected Account Hub search input handler"
+	body = handler.group("body")
+	assert "this.filter_local_list(val)" in body
+	assert "debouncedSearch()" in body
+	assert "perform_search_with_query" not in body, "remote call must go through the debounce wrapper"
+	assert "const debouncedSearch = debounce(" in js
 
 
 def test_result_clicks_stay_on_account_hub_and_select_account():
+	"""Clicking a result selects the account in place — it must never route off
+	to a Form view (the regression this file exists to prevent)."""
 	js = source()
-
-	assert "event.preventDefault();" in js
-	assert "event.stopPropagation();" in js
-	assert "this.on_result_click(account, item)" in js
+	assert 'item.on("click", () => this.on_result_click(account, item));' in js
+	body = js.split("on_result_click(account, itemEl) {", 1)[1].split("\n\t}", 1)[0]
+	assert 'removeClass("active")' in body
+	assert 'itemEl.addClass("active")' in body
 	assert "frappe.set_route('Form', 'Account Upgrade Request'" not in js
+	assert 'frappe.set_route("Form"' not in js
 
 
 def test_search_error_path_surfaces_server_message_before_generic():

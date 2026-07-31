@@ -544,6 +544,7 @@ class AccountHub {
                                 <!-- Tabs -->
                                 <div class="ah-tabs">
                                     <button class="ah-tab active" data-tab="overview">Overview</button>
+                                    <button class="ah-tab" data-tab="banking">Banking</button>
                                     <button class="ah-tab" data-tab="wallets">Wallets</button>
                                     <button class="ah-tab" data-tab="documents">Documents</button>
                                     <button class="ah-tab" data-tab="merchant">Business</button>
@@ -595,6 +596,11 @@ class AccountHub {
                                             </div>
                                         </div>
                                     </div>
+                                </div>
+
+                                <!-- Tab: Banking -->
+                                <div class="ah-tab-content" data-tab="banking">
+                                    <div class="banking-container"></div>
                                 </div>
 
                                 <!-- Tab: Wallets -->
@@ -658,6 +664,7 @@ class AccountHub {
 			btnActivateAccount: main.find(".btn-activate-account"),
 			btnUpdatePhone: main.find(".btn-update-phone"),
 			// Containers
+			bankingContainer: main.find(".banking-container"),
 			walletsContainer: main.find(".wallets-container"),
 			documentsContainer: main.find(".documents-container"),
 			merchantContainer: main.find(".merchant-container"),
@@ -1048,6 +1055,7 @@ class AccountHub {
 
 		// Populate all tabs
 		this.populate_overview(account);
+		this.populate_banking(account);
 		this.populate_wallets(account);
 		this.populate_documents(account);
 		this.populate_merchant(account);
@@ -1119,6 +1127,325 @@ class AccountHub {
 		// Action buttons visibility
 		this.$.btnLockAccount.toggle(account.status === ACCOUNT_STATUSES.ACTIVE);
 		this.$.btnActivateAccount.toggle(account.status === ACCOUNT_STATUSES.LOCKED);
+	}
+
+	/* ── Tab: Banking ────────────────────────────────── */
+
+	populate_banking(account) {
+		const container = this.$.bankingContainer;
+		container.html(`
+            <div class="ah-empty">
+                <div class="ah-empty-icon">🏦</div>
+                <div class="ah-empty-text">Loading banking information…</div>
+            </div>
+        `);
+		// find_account resolves mongo _id / username / uuid / phone / wallet id.
+		const accountRef =
+			account.username ||
+			account.owner?.phone ||
+			account.uuid ||
+			((account.wallets || [])[0] || {}).id ||
+			"";
+		frappe.call({
+			method: "admin_panel.api.banking.get_customer_banking",
+			args: { erp_party: account.erpParty || "", account_ref: accountRef },
+			callback: (res) => {
+				if (this.current_account !== account) return; // switched customers mid-flight
+				const d = res.message;
+				if (!d || d.success === false) {
+					container.html(
+						this.banking_empty((d && d.error) || "Could not load banking information.")
+					);
+					return;
+				}
+				container.html(this.banking_html(d));
+				this.bind_banking_actions(container, account, d);
+			},
+			error: () => {
+				if (this.current_account !== account) return;
+				container.html(this.banking_empty("Could not load banking information."));
+			},
+		});
+	}
+
+	bind_banking_actions(container, account, d) {
+		container
+			.find(".banking-add-btn")
+			.on("click", () => this.bank_account_dialog(account, null));
+		container.find(".banking-edit-btn").on("click", (e) => {
+			const name = $(e.currentTarget).data("name");
+			const bank = (d.bank_accounts || []).find((b) => b.name === name);
+			if (bank) this.bank_account_dialog(account, bank);
+		});
+		container.find(".banking-default-btn").on("click", (e) => {
+			const name = $(e.currentTarget).data("name");
+			frappe.confirm(
+				`Make <strong>${frappe.utils.escape_html(
+					name
+				)}</strong> the default cashout account? The current default is cleared.`,
+				() => {
+					this.banking_call(
+						"admin_panel.api.banking.set_default_bank_account",
+						{ bank_account_id: name, erp_party: account.erpParty },
+						"Default cashout account updated.",
+						account
+					);
+				}
+			);
+		});
+	}
+
+	banking_call(method, args, successMessage, account) {
+		frappe.call({
+			method,
+			args,
+			freeze: true,
+			callback: (res) => {
+				const result = res.message || {};
+				if (result.success === false) {
+					frappe.msgprint({
+						title: "Error",
+						indicator: "red",
+						message: result.error || "Operation failed",
+					});
+					return;
+				}
+				frappe.show_alert({ message: successMessage, indicator: "green" }, 5);
+				this.populate_banking(account);
+			},
+			error: (err) => {
+				frappe.msgprint({
+					title: "Error",
+					indicator: "red",
+					message:
+						err?.responseJSON?.exception ||
+						err?.responseJSON?.error ||
+						err?.message ||
+						"Operation failed",
+				});
+			},
+		});
+	}
+
+	bank_account_dialog(account, existing) {
+		const isEdit = !!existing;
+		const fields = [
+			{
+				fieldname: "bank_name",
+				fieldtype: "Data",
+				label: "Bank",
+				reqd: 1,
+				default: existing?.bank || "",
+			},
+			{
+				fieldname: "bank_branch",
+				fieldtype: "Data",
+				label: "Branch Code",
+				default: existing?.branch_code || "",
+			},
+			{
+				fieldname: "account_type",
+				fieldtype: "Select",
+				label: "Account Type",
+				options: "Chequing\nSavings",
+				reqd: 1,
+				default: existing?.account_type || "Chequing",
+			},
+			{
+				fieldname: "account_number",
+				fieldtype: "Data",
+				label: "Account Number",
+				reqd: 1,
+				default: existing?.bank_account_no || "",
+			},
+			{
+				fieldname: "currency",
+				fieldtype: "Select",
+				label: "Currency",
+				options: "JMD\nUSD",
+				reqd: 1,
+				default: existing?.currency || "JMD",
+				description: "Must match the payout currency — cashout accepts JMD or USD only.",
+			},
+			{
+				fieldname: "account_name",
+				fieldtype: "Data",
+				label: "Account Holder Name",
+				default: existing?.account_name || "",
+			},
+		];
+		if (!isEdit) {
+			fields.push({
+				fieldname: "set_default",
+				fieldtype: "Check",
+				label: "Set as default cashout account",
+			});
+		}
+		const d = new frappe.ui.Dialog({
+			title: isEdit
+				? `Edit Bank Account — ${frappe.utils.escape_html(existing.bank || "")}`
+				: "Add Bank Account",
+			fields,
+			primary_action_label: isEdit ? "Save Changes" : "Add Account",
+			primary_action: (values) => {
+				d.hide();
+				const args = { erp_party: account.erpParty, ...values };
+				if (isEdit) args.bank_account_id = existing.name;
+				this.banking_call(
+					isEdit
+						? "admin_panel.api.banking.update_bank_account"
+						: "admin_panel.api.banking.add_bank_account",
+					args,
+					isEdit ? "Bank account updated." : "Bank account added.",
+					account
+				);
+			},
+		});
+		d.show();
+	}
+
+	banking_empty(message) {
+		return `
+            <div class="ah-empty">
+                <div class="ah-empty-icon">🏦</div>
+                <div class="ah-empty-text">${frappe.utils.escape_html(message)}</div>
+            </div>
+        `;
+	}
+
+	banking_html(d) {
+		const esc = frappe.utils.escape_html;
+		const row = (label, value) =>
+			value == null || value === ""
+				? ""
+				: `<div class="ah-info-row">
+                        <span class="ah-info-label">${esc(label)}</span>
+                        <span class="ah-info-value">${esc(String(value))}</span>
+                    </div>`;
+		const okBadge = (text) =>
+			`<span class="ah-verified-badge"><i class="fa fa-check-circle"></i> ${esc(
+				text
+			)}</span>`;
+		const warnBadge = (text) =>
+			`<span class="ah-verified-badge" style="background:rgba(245,158,11,0.1);color:var(--color-warning);">${esc(
+				text
+			)}</span>`;
+		const noteCard = (title, message) => `
+            <div class="ah-info-card">
+                <h6><i class="fa fa-university" style="margin-right:6px;color:var(--color-primary);"></i> ${esc(
+					title
+				)}</h6>
+                <div class="ah-info-row"><span class="ah-info-label">${esc(message)}</span></div>
+            </div>`;
+
+		const erpCards = (d.bank_accounts || [])
+			.map(
+				(b) => `
+            <div class="ah-info-card">
+                <h6><i class="fa fa-university" style="margin-right:6px;color:var(--color-primary);"></i>
+                    Cashout — ${esc(b.bank || "Bank")}
+                    ${b.is_default ? okBadge("Default") : ""}
+                    ${b.disabled ? warnBadge("Disabled") : ""}
+                </h6>
+                ${row("Account name", b.account_name)}
+                ${row("Account number", b.bank_account_no)}
+                ${row("Branch", b.branch_code)}
+                ${row("Type", b.account_type)}
+                ${row("Currency", b.currency)}
+                <div style="margin-top:10px;display:flex;gap:8px;">
+                    <button class="btn btn-xs btn-default banking-edit-btn" data-name="${esc(
+						b.name
+					)}">Edit</button>
+                    ${
+						b.is_default
+							? ""
+							: `<button class="btn btn-xs btn-default banking-default-btn" data-name="${esc(
+									b.name
+							  )}">Set default</button>`
+					}
+                </div>
+            </div>`
+			)
+			.join("");
+		const erpSection =
+			erpCards ||
+			noteCard(
+				"Cashout Bank Accounts",
+				d.erp_party
+					? "No bank accounts on file for this customer."
+					: "No ERP customer linked — nothing on file."
+			);
+
+		const bridge = d.bridge || { linked: false };
+		let bridgeSection = "";
+		if (!bridge.linked) {
+			bridgeSection = noteCard(
+				"Bridge USD Account",
+				bridge.error || "No Bridge customer linked."
+			);
+		} else {
+			const virtuals = (bridge.virtual_accounts || [])
+				.map(
+					(v) => `
+                <div class="ah-info-card">
+                    <h6><i class="fa fa-university" style="margin-right:6px;color:var(--color-primary);"></i>
+                        Bridge USD Account ${
+							v.status === "activated" || v.status === "active"
+								? okBadge(v.status)
+								: warnBadge(v.status || "unknown")
+						}
+                    </h6>
+                    ${row("Bank", v.bank_name)}
+                    ${row("Beneficiary", v.beneficiary_name)}
+                    ${row("Routing number", v.routing_number)}
+                    ${row("Account number", v.account_number)}
+                    ${row("Deposit currency", v.currency)}
+                    ${row("Rails", (v.payment_rails || []).join(", "))}
+                    ${row("Settles to", v.destination_currency)}
+                </div>`
+				)
+				.join("");
+			const externals = (bridge.external_accounts || [])
+				.map(
+					(e) => `
+                <div class="ah-info-card">
+                    <h6><i class="fa fa-university" style="margin-right:6px;color:var(--color-primary);"></i>
+                        External — ${esc(e.bank_name || "Bank")}
+                        ${e.active === false ? warnBadge("Inactive") : ""}
+                    </h6>
+                    ${row("Owner", e.owner_name)}
+                    ${row("Type", e.account_type)}
+                    ${row("Account", e.last_4 ? "•••• " + e.last_4 : null)}
+                    ${row("Routing number", e.routing_number)}
+                    ${row("IBAN", e.iban)}
+                    ${row("Currency", e.currency)}
+                </div>`
+				)
+				.join("");
+			bridgeSection =
+				(bridge.error
+					? noteCard("Bridge USD Account", `Bridge error: ${bridge.error}`)
+					: "") +
+				(virtuals ||
+					(bridge.error
+						? ""
+						: noteCard(
+								"Bridge USD Account",
+								`No virtual account issued yet (KYC: ${
+									bridge.kyc_status || "unknown"
+								}).`
+						  ))) +
+				externals;
+		}
+
+		// Bridge cards are read-only (Bridge owns that data); only ERP cashout
+		// accounts are editable, and only when the account has an ERP party.
+		const toolbar = d.erp_party
+			? `<div style="margin-bottom:12px;display:flex;justify-content:flex-end;">
+                <button class="btn btn-sm btn-primary banking-add-btn">Add Bank Account</button>
+            </div>`
+			: "";
+		return `${toolbar}<div class="ah-info-grid">${erpSection}${bridgeSection}</div>`;
 	}
 
 	/* ── Tab: Wallets ────────────────────────────────── */
