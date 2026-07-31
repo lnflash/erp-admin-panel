@@ -18,8 +18,13 @@ A live ops view of the invite/refer-a-friend reward payouts.
   processing / unrewarded), per-party paid ✓/✗, any error, and when. Filterable
   by status; the "Needs Reconciliation" tile and the Pending/Partial/Failed
   chips surface the actionable rows. The row list is capped server-side at the
-  **latest 200** (the status line shows "showing latest N of M" when
-  truncated); summary aggregates always cover every invite.
+  **latest 200**, but actionable rows (failed / partial / pending / processing /
+  unknown) always bypass the cap — only paid/unrewarded rows are truncated — so
+  every row ops must reconcile is reachable (the status line shows "showing
+  latest N of M" when truncated); summary aggregates always cover every invite.
+  An unknown (drifted) `rewardStatus` from a newer backend is counted in an
+  explicit `unknown` bucket, added to Needs Reconciliation, and rendered with a
+  warning tone — backend drift is fail-visible, never fail-quiet.
 
 ## Reward statuses
 

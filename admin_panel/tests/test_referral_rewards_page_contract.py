@@ -95,6 +95,7 @@ def test_js_escapes_user_data():
 		"s.partial || 0",
 		"s.failed || 0",
 		"s.pending || 0",
+		"s.unknown || 0",
 		"s.wallet_runway_referrals",
 		"t.count_parties",
 	}
@@ -105,6 +106,24 @@ def test_js_escapes_user_data():
 		if any(call in norm for call in safe_calls):
 			continue
 		assert norm in allowed_numeric, f"unescaped data interpolation: ${{{norm}}}"
+
+
+def test_js_no_string_concat_html_with_row_fields():
+	"""HTML built by string concatenation bypasses the `${...}` escape sweep.
+
+	Forbid concatenating quoted strings with row/response data (e.g.
+	`"<b>" + r.contact + "</b>"`), which would never be seen by the
+	interpolation sweep above. Data must flow through template literals (and
+	the escaping helpers) only.
+	"""
+	js = read_text(PAGE_DIR / "referral_rewards.js")
+
+	assert not re.search(
+		r"[\"'`]\s*\+\s*(?:r|d|row)\.", js
+	), "string-concat with row/response data bypasses the escape sweep"
+	assert not re.search(
+		r"\b(?:r|d|row)\.\w+\s*\+\s*[\"'`]", js
+	), "row/response data concatenated into a string bypasses the escape sweep"
 
 
 def test_js_relative_time_uses_server_clock_not_local():

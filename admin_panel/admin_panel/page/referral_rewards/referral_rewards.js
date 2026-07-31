@@ -142,8 +142,12 @@ frappe.pages["referral-rewards"].on_page_load = function (wrapper) {
 };
 
 frappe.pages["referral-rewards"].on_page_show = function (wrapper) {
-	if (wrapper.referral_rewards) wrapper.referral_rewards.load();
+	if (wrapper.referral_rewards) wrapper.referral_rewards.maybe_reload();
 };
+
+// Skip the on_page_show reload when data is fresher than this (ms). on_page_show
+// fires immediately after on_page_load, which already kicked off a load.
+const RR_RELOAD_AFTER_MS = 15000;
 
 class ReferralRewards {
 	constructor(page) {
@@ -153,8 +157,19 @@ class ReferralRewards {
 		this.funnel = [];
 		this.now = null;
 		this.active_bucket = "all";
+		this._loading = false;
+		this._loaded_at = null; // performance.now() timestamp (monotonic, not wall clock)
 		this.page.set_primary_action("Refresh", () => this.load(), "refresh");
 		this.render_shell();
+		this.load();
+	}
+
+	maybe_reload() {
+		// Tab revisits: don't stack a second full scan (+IBEX call) on top of an
+		// in-flight or seconds-old load; the Refresh button still forces one.
+		if (this._loading) return;
+		if (this._loaded_at !== null && performance.now() - this._loaded_at < RR_RELOAD_AFTER_MS)
+			return;
 		this.load();
 	}
 
@@ -176,10 +191,14 @@ class ReferralRewards {
 	}
 
 	load() {
+		if (this._loading) return; // dedupe double-clicks / stacked triggers
+		this._loading = true;
 		this.set_status("Loading referral rewards…");
 		frappe.call({
 			method: "admin_panel.api.referral_rewards.get_referral_rewards",
 			callback: (res) => {
+				this._loading = false;
+				this._loaded_at = performance.now();
 				const d = res.message || {};
 				if (d.success === false) {
 					this.set_status(
@@ -214,8 +233,11 @@ class ReferralRewards {
 				this.render_buckets();
 				this.render_table();
 			},
-			error: () =>
-				this.set_status(`<span class="err">Failed to load referral rewards.</span>`),
+			error: () => {
+				this._loading = false;
+				this._loaded_at = null; // failed loads shouldn't suppress a retry on revisit
+				this.set_status(`<span class="err">Failed to load referral rewards.</span>`);
+			},
 		});
 	}
 
@@ -262,7 +284,7 @@ class ReferralRewards {
 						`${s.needs_reconciliation || 0}`,
 						`${s.partial || 0} partial / ${s.failed || 0} failed / ${
 							s.pending || 0
-						} pending`,
+						} pending / ${s.unknown || 0} unknown`,
 						(s.needs_reconciliation || 0) > 0
 							? { tile: "alert-tile", value: "bad" }
 							: null
@@ -299,14 +321,21 @@ class ReferralRewards {
 	}
 
 	render_buckets() {
+		// All chip counts come from the SUMMARY (full dataset) so every badge
+		// shares one basis; the row list is capped for paid/unrewarded but always
+		// contains every actionable row, so actionable filters show all of them.
+		const s = this.summary;
 		const counts = {
-			all: this.rows.length,
-			paid: this.summary.paid || 0,
-			pending: this.summary.pending || 0,
-			partial: this.summary.partial || 0,
-			failed: this.summary.failed || 0,
-			processing: this.summary.processing || 0,
-			unrewarded: this.rows.filter((r) => r.reward_status === "unrewarded").length,
+			all: s.rows_total === undefined ? this.rows.length : s.rows_total,
+			paid: s.paid || 0,
+			pending: s.pending || 0,
+			partial: s.partial || 0,
+			failed: s.failed || 0,
+			processing: s.processing || 0,
+			unrewarded:
+				s.unrewarded === undefined
+					? this.rows.filter((r) => r.reward_status === "unrewarded").length
+					: s.unrewarded,
 		};
 		const html = RR_BUCKETS.map((b) => {
 			const active = b.key === this.active_bucket ? " active" : "";
@@ -336,7 +365,8 @@ class ReferralRewards {
 			b ? '<span class="rr-yes">✓</span>' : '<span class="rr-no">✗</span>';
 		const body = rows
 			.map((r) => {
-				const tone = RR_STATUS_TONE[r.reward_status] || "";
+				// Unknown (drifted) statuses tone as warnings — never render silent.
+				const tone = RR_STATUS_TONE[r.reward_status] ?? "warn";
 				const err = r.reward_error
 					? `<div class="rr-err">${esc(r.reward_error)}</div>`
 					: "";

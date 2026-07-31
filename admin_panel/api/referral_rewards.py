@@ -17,8 +17,9 @@ from .referral_rewards_core import REWARD_TIERS, build_overview
 __all__ = ["build_overview", "get_referral_rewards"]
 
 # The backend payout funds from the rewards account's USDT wallet first, then
-# USD (flash/src/app/invite/award-referral-reward.ts pickPayoutWallet). Mirror
-# that exact preference so the balance shown is the wallet payouts draw from.
+# USD — the inline `rewardsWallets.find(Usdt) ?? find(Usd)` preference in
+# flash/src/app/invite/award-referral-reward.ts. Mirror it exactly so the
+# balance shown is the wallet payouts draw from.
 _PAYOUT_CURRENCY_PREFERENCE = ("USDT", "USD")
 
 

@@ -223,7 +223,9 @@ def test_summary_counts_and_disbursement():
 	assert s["failed"] == 1
 	assert s["processing"] == 0
 	assert s["pending"] == 1
-	assert s["needs_reconciliation"] == 3  # partial + failed + pending
+	assert s["unknown"] == 0
+	assert s["unrewarded"] == 1  # i4: accepted, KYC not approved yet
+	assert s["needs_reconciliation"] == 3  # partial + failed + pending + unknown
 
 	# disbursed: i1 both @ $5 = $10; i2 one @ $2.50 = $2.50; i8 both @ $5 = $10.
 	assert s["total_disbursed_dollars"] == 22.50
@@ -296,10 +298,12 @@ def test_row_cap_truncates_rows_but_not_summary():
 	invites, accounts = _fixture()
 	out = build_overview(invites, accounts, counter_seq=0, max_rows=2)
 
-	# Rows capped to the newest 2; the summary still covers everything.
-	assert [r["invite_id"] for r in out["rows"]] == ["i4", "i1"]
+	# Actionable rows (partial i2, failed i3, pending i8) always survive the
+	# cap; only paid/unrewarded rows consume the budget (here: none, since the
+	# 3 actionable rows already exceed max_rows=2). Summary covers everything.
+	assert [r["invite_id"] for r in out["rows"]] == ["i2", "i3", "i8"]
 	assert out["summary"]["rows_total"] == 5
-	assert out["summary"]["rows_shown"] == 2
+	assert out["summary"]["rows_shown"] == 3
 	assert out["summary"]["accepted"] == 5
 	assert out["summary"]["total_disbursed_dollars"] == 22.50
 
@@ -307,6 +311,106 @@ def test_row_cap_truncates_rows_but_not_summary():
 	full = build_overview(invites, accounts, counter_seq=0)
 	assert full["summary"]["rows_total"] == 5
 	assert full["summary"]["rows_shown"] == 5
+
+
+def test_row_cap_never_hides_actionable_rows():
+	# An OLD failed row must survive a cap that newer paid rows would otherwise
+	# fill; newest-first order is preserved; the budget goes to paid rows.
+	accounts = {}
+	invites = []
+	for i in range(5):
+		invites.append(
+			{
+				"invite_id": f"paid-{i}",
+				"status": "ACCEPTED",
+				"inviter_id": None,
+				"redeemed_by_id": None,
+				"contact": f"p{i}@x.com",
+				"reward_status": "paid",
+				"reward_seq": i + 1,
+				"reward_amount_cents": 500,
+				"redeemed_at": f"2026-07-2{i + 3}T10:00:00",  # 23..27, all newer
+				"rewarded_at": f"2026-07-2{i + 3}T11:00:00",
+				"inviter_rewarded_at": f"2026-07-2{i + 3}T11:00:00",
+				"invitee_rewarded_at": f"2026-07-2{i + 3}T11:00:00",
+				"reward_error": None,
+			}
+		)
+	invites.append(
+		{
+			"invite_id": "old-failed",
+			"status": "ACCEPTED",
+			"inviter_id": None,
+			"redeemed_by_id": None,
+			"contact": "old@x.com",
+			"reward_status": "failed",
+			"reward_seq": 99,
+			"reward_amount_cents": 500,
+			"redeemed_at": "2026-07-01T10:00:00",  # oldest of all
+			"rewarded_at": None,
+			"inviter_rewarded_at": None,
+			"invitee_rewarded_at": None,
+			"reward_error": "rewards account not configured",
+		}
+	)
+
+	out = build_overview(invites, accounts, counter_seq=0, max_rows=3)
+	ids = [r["invite_id"] for r in out["rows"]]
+
+	# The oldest row survives because it is actionable; two newest paid rows
+	# fill the remaining budget; overall order stays newest-first.
+	assert ids == ["paid-4", "paid-3", "old-failed"]
+	assert out["summary"]["rows_total"] == 6
+	assert out["summary"]["rows_shown"] == 3
+
+
+def test_unknown_reward_status_is_fail_visible():
+	# A rewardStatus this page doesn't know (backend drift) must land in
+	# needs_reconciliation + an explicit unknown count, and survive the row cap.
+	accounts = {}
+	invites = [
+		{
+			"invite_id": "drift-1",
+			"status": "ACCEPTED",
+			"inviter_id": None,
+			"redeemed_by_id": None,
+			"contact": "drift@x.com",
+			"reward_status": "refunded",  # not a status this page knows
+			"reward_seq": 7,
+			"reward_amount_cents": 500,
+			"redeemed_at": "2026-07-01T10:00:00",
+			"rewarded_at": None,
+			"inviter_rewarded_at": None,
+			"invitee_rewarded_at": None,
+			"reward_error": None,
+		},
+		{
+			"invite_id": "ok-1",
+			"status": "ACCEPTED",
+			"inviter_id": None,
+			"redeemed_by_id": None,
+			"contact": "ok@x.com",
+			"reward_status": "paid",
+			"reward_seq": 8,
+			"reward_amount_cents": 500,
+			"redeemed_at": "2026-07-02T10:00:00",
+			"rewarded_at": "2026-07-02T11:00:00",
+			"inviter_rewarded_at": "2026-07-02T11:00:00",
+			"invitee_rewarded_at": "2026-07-02T11:00:00",
+			"reward_error": None,
+		},
+	]
+
+	out = build_overview(invites, accounts, counter_seq=0, max_rows=1)
+	s = out["summary"]
+
+	assert s["unknown"] == 1
+	assert s["needs_reconciliation"] == 1  # the drifted row, nothing else
+	# The drifted row is actionable: it survives a cap of 1 alongside no paid
+	# budget (actionable_total=1 -> budget=0 -> paid row truncated).
+	assert [r["invite_id"] for r in out["rows"]] == ["drift-1"]
+	# The row carries the raw drifted status for the UI to render (warn tone).
+	assert out["rows"][0]["reward_status"] == "refunded"
 
 
 def test_funnel_counts_and_conversion():

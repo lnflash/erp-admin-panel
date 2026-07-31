@@ -28,6 +28,17 @@ REWARD_TIERS = [
 # needs-reconciliation.
 REWARDED_STATUSES = {"paid", "partial", "pending"}
 
+# Statuses the known-bucket counters track. Anything else non-null is backend
+# drift (a new status this page doesn't know) — counted as "unknown" and routed
+# into needs_reconciliation so drift is fail-visible, never fail-quiet.
+KNOWN_REWARD_STATUSES = ("paid", "partial", "failed", "processing", "pending")
+
+
+def _is_actionable(row_reward_status):
+	"""Rows ops must be able to reach: everything except clean 'paid' and
+	not-yet-rewarded. Unknown (drifted) statuses are actionable by definition."""
+	return row_reward_status not in ("paid", "unrewarded")
+
 
 def _tier_amount_cents(tiers, seq):
 	"""Per-party amount (cents) for the 1-based referral sequence number `seq`."""
@@ -71,13 +82,18 @@ def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_ba
 	    counter_seq: int, the global referral sequence so far.
 	    tiers: the reward schedule.
 	    wallet_balance: live USD balance of the funding wallet, or None.
-	    max_rows: cap on the returned row list (newest first); the summary
-	        aggregates still cover every invite. None = no cap.
+	    max_rows: cap on the returned row list (newest first). Actionable rows
+	        (anything except clean "paid" / "unrewarded") ALWAYS survive the cap —
+	        only paid/unrewarded rows are truncated — so every row ops must act on
+	        is reachable. The summary aggregates still cover every invite.
+	        None = no cap.
 
 	Returns {rows, summary, funnel}, all JSON-serializable.
 	"""
 	rows = []
-	status_counts = {"paid": 0, "partial": 0, "failed": 0, "processing": 0, "pending": 0}
+	status_counts = {status: 0 for status in KNOWN_REWARD_STATUSES}
+	unknown = 0
+	unrewarded = 0
 	total_invites = len(invites)
 	sent = 0
 	accepted = 0
@@ -101,6 +117,9 @@ def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_ba
 			rewarded += 1
 		if reward_status in status_counts:
 			status_counts[reward_status] += 1
+		elif reward_status:
+			# A status this page doesn't know — backend drift. Fail-visible.
+			unknown += 1
 
 		amount_cents = inv.get("reward_amount_cents") or 0
 		inviter_paid = bool(inv.get("inviter_rewarded_at"))
@@ -119,6 +138,8 @@ def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_ba
 		# The table shows only ACCEPTED (redeemed) invites — the ones eligible
 		# for a reward once the invitee's KYC is approved.
 		if status == "ACCEPTED":
+			if not reward_status:
+				unrewarded += 1
 			inviter = accounts.get(inv.get("inviter_id")) or {}
 			invitee = accounts.get(inv.get("redeemed_by_id")) or {}
 			rows.append(
@@ -141,7 +162,20 @@ def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_ba
 	rows.sort(key=lambda r: (r.get("redeemed_at") or ""), reverse=True)
 	rows_total = len(rows)
 	if max_rows is not None and rows_total > max_rows:
-		rows = rows[:max_rows]
+		# Actionable rows (failed/partial/pending/processing/unknown) must never
+		# be hidden by the cap — they are the rare rows ops has to reconcile.
+		# Only paid/unrewarded rows consume the cap budget; overall newest-first
+		# order is preserved by the single pass over the sorted list.
+		actionable_total = sum(1 for r in rows if _is_actionable(r["reward_status"]))
+		budget = max(0, max_rows - actionable_total)
+		kept = []
+		for r in rows:
+			if _is_actionable(r["reward_status"]):
+				kept.append(r)
+			elif budget > 0:
+				kept.append(r)
+				budget -= 1
+		rows = kept
 
 	current_tier_cents = current_tier(counter_seq, tiers)
 	current_tier_dollars = current_tier_cents / 100.0
@@ -169,8 +203,10 @@ def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_ba
 		"failed": status_counts["failed"],
 		"processing": status_counts["processing"],
 		"pending": status_counts["pending"],
+		"unknown": unknown,
+		"unrewarded": unrewarded,
 		"needs_reconciliation": (
-			status_counts["partial"] + status_counts["failed"] + status_counts["pending"]
+			status_counts["partial"] + status_counts["failed"] + status_counts["pending"] + unknown
 		),
 		"total_disbursed_dollars": round(total_disbursed_cents / 100.0, 2),
 		"disbursed_by_tier": tier_breakdown,
