@@ -1217,7 +1217,11 @@ class AccountHub {
 				frappe.msgprint({
 					title: "Error",
 					indicator: "red",
-					message: err?.responseJSON?.exception || err?.message || "Operation failed",
+					message:
+						err?.responseJSON?.exception ||
+						err?.responseJSON?.error ||
+						err?.message ||
+						"Operation failed",
 				});
 			},
 		});
@@ -1278,7 +1282,9 @@ class AccountHub {
 			});
 		}
 		const d = new frappe.ui.Dialog({
-			title: isEdit ? `Edit Bank Account — ${existing.bank || ""}` : "Add Bank Account",
+			title: isEdit
+				? `Edit Bank Account — ${frappe.utils.escape_html(existing.bank || "")}`
+				: "Add Bank Account",
 			fields,
 			primary_action_label: isEdit ? "Save Changes" : "Add Account",
 			primary_action: (values) => {

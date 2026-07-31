@@ -164,10 +164,18 @@ def add_bank_account(
 	)
 	make_default = 1 if (cint(set_default) or not existing) else 0
 
+	# ERPNext autonames Bank Accounts "{account_name} - {bank}", and the doc
+	# name is load-bearing (it is the app's bankAccountId). Disambiguate the
+	# holder with the account number's last 4 so a second account at the same
+	# bank can exist; existing docs keep their names.
+	holder = cstr(account_name).strip() or erp_party
+	if frappe.db.exists("Bank Account", f"{holder} - {bank_name}"):
+		holder = f"{holder} (…{account_number[-4:]})"
+
 	doc = frappe.get_doc(
 		{
 			"doctype": "Bank Account",
-			"account_name": cstr(account_name).strip() or erp_party,
+			"account_name": holder,
 			"bank": bank_name,
 			"bank_account_no": account_number,
 			"branch_code": cstr(bank_branch).strip(),
@@ -224,6 +232,8 @@ def update_bank_account(
 	bank_name, account_number, account_type, currency = _validate_bank_fields(
 		bank_name, account_number, account_type, currency
 	)
+	# The doc name stays as-is even when the bank changes — it is the app's
+	# bankAccountId, and changing it would strand mobile references.
 	bank_account = _owned_bank_account(bank_account_id, erp_party, for_update=True)
 
 	if frappe.db.exists(

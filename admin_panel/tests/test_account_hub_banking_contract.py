@@ -132,3 +132,23 @@ def test_js_wires_banking_write_endpoints_and_buttons():
 		assert hook in ACCOUNT_HUB_JS
 	# Mutations repaint the Banking tab, not the whole account.
 	assert "this.populate_banking(account);" in ACCOUNT_HUB_JS
+
+
+def test_second_account_at_same_bank_gets_disambiguated_name():
+	"""ERPNext autonames Bank Accounts "{account_name} - {bank}" — without
+	disambiguation, a customer's second account at the same bank collides on
+	the doc name and the insert dies."""
+	assert 'frappe.db.exists("Bank Account", f"{holder} - {bank_name}")' in BANKING_PY
+	assert 'f"{holder} (…{account_number[-4:]})"' in BANKING_PY
+
+
+def test_js_never_interpolates_bank_name_raw():
+	"""The edit-dialog title must escape the bank name — it is the only place
+	admin-entered data could reach a dialog title unescaped."""
+	assert "${existing.bank" not in ACCOUNT_HUB_JS
+
+
+def test_js_error_chain_surfaces_envelope_errors():
+	"""handle_api_errors failures arrive as HTTP 500 with responseJSON.error —
+	without it in the chain, a mongo/Bridge outage shows a generic message."""
+	assert "err?.responseJSON?.error" in ACCOUNT_HUB_JS
