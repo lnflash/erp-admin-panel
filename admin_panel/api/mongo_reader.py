@@ -276,3 +276,64 @@ def customer_bundle(account: dict) -> dict:
 			for c in (account.get("contacts") or [])
 		],
 	}
+
+
+def load_invites() -> list:
+	"""Referral invites with their reward-payout fields.
+
+	ObjectIds are str()'d and datetimes iso'd so the pure aggregation
+	(`referral_rewards_core.build_overview`) stays IO-free and the endpoint's
+	JSON serialization can't choke on a raw ObjectId/datetime.
+	"""
+	db = _get_db()
+	out = []
+	cursor = db.invites.find(
+		{},
+		{
+			"_id": 1,
+			"contact": 1,
+			"method": 1,
+			"inviterId": 1,
+			"redeemedById": 1,
+			"status": 1,
+			"createdAt": 1,
+			"expiresAt": 1,
+			"redeemedAt": 1,
+			"rewardStatus": 1,
+			"rewardSeq": 1,
+			"rewardAmountCents": 1,
+			"rewardedAt": 1,
+			"inviterRewardedAt": 1,
+			"inviteeRewardedAt": 1,
+			"rewardError": 1,
+		},
+	)
+	for doc in cursor:
+		out.append(
+			{
+				"invite_id": str(doc["_id"]),
+				"contact": doc.get("contact"),
+				"method": doc.get("method"),
+				"inviter_id": str(doc["inviterId"]) if doc.get("inviterId") else None,
+				"redeemed_by_id": str(doc["redeemedById"]) if doc.get("redeemedById") else None,
+				"status": doc.get("status"),
+				"created_at": _iso(doc.get("createdAt")),
+				"expires_at": _iso(doc.get("expiresAt")),
+				"redeemed_at": _iso(doc.get("redeemedAt")),
+				"reward_status": doc.get("rewardStatus"),
+				"reward_seq": doc.get("rewardSeq"),
+				"reward_amount_cents": doc.get("rewardAmountCents"),
+				"rewarded_at": _iso(doc.get("rewardedAt")),
+				"inviter_rewarded_at": _iso(doc.get("inviterRewardedAt")),
+				"invitee_rewarded_at": _iso(doc.get("inviteeRewardedAt")),
+				"reward_error": doc.get("rewardError"),
+			}
+		)
+	return out
+
+
+def load_reward_counter() -> int:
+	"""Global referral-reward sequence (0 if no referral has been paid yet)."""
+	db = _get_db()
+	doc = db.referralrewardcounters.find_one({"_id": "referral_reward"})
+	return int(doc.get("seq", 0)) if doc else 0
