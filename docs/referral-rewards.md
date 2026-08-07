@@ -13,7 +13,10 @@ A live ops view of the invite/refer-a-friend reward payouts.
   stage-over-stage conversion. "Sent" includes sent-then-**EXPIRED** invites so
   the Accepted% denominator is honest (the invite model has no `sentAt`, so the
   rare admin-revoked PENDING→EXPIRED invite is also counted as sent).
-- **Per-referral table** — redeemed (`ACCEPTED`) invites: invitee, inviter,
+- **Per-invite table** — every invite: redeemed (`ACCEPTED`) rows carry the
+  reward lifecycle; un-redeemed rows show the invite lifecycle (`sent` /
+  `unsent` / `expired`) in the reward column with the contact as the invitee.
+  Redeemed rows: invitee, inviter,
   amount, tier sequence, reward status (paid / pending / partial / failed /
   processing / unrewarded), per-party paid ✓/✗, any error, and when. Filterable
   by status; the "Needs Reconciliation" tile and the Pending/Partial/Failed
