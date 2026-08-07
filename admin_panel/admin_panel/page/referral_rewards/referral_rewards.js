@@ -1,7 +1,8 @@
 const RR_ALLOWED_ROLES = ["Accounts Manager", "Flash Admin", "System Manager"];
 
 // Reward-status buckets (clickable filters). Keys match the invite rewardStatus
-// (plus "unrewarded" for accepted-but-not-yet-paid and "all").
+// (plus "unrewarded" for accepted-but-not-yet-paid, "sent"/"expired" for
+// un-redeemed invite lifecycle rows, and "all").
 const RR_BUCKETS = [
 	{ key: "all", label: "All" },
 	{ key: "paid", label: "Paid" },
@@ -10,6 +11,8 @@ const RR_BUCKETS = [
 	{ key: "failed", label: "Failed" },
 	{ key: "processing", label: "Processing" },
 	{ key: "unrewarded", label: "Unrewarded" },
+	{ key: "sent", label: "Sent" },
+	{ key: "expired", label: "Expired" },
 ];
 
 const RR_STATUS_TONE = {
@@ -21,6 +24,13 @@ const RR_STATUS_TONE = {
 	failed: "bad",
 	processing: "warn",
 	unrewarded: "",
+	// Un-redeemed invite lifecycle rows — informational, not actionable.
+	sent: "",
+	expired: "",
+	// PENDING invite (created, delivery unconfirmed) — mapped server-side to
+	// "unsent" so it can't collide with the IBEX reward "pending" bucket. A
+	// stuck-unsent invite is worth a second look, so it tones as a warning.
+	unsent: "warn",
 };
 
 const RR_CSS = `
@@ -223,7 +233,7 @@ class ReferralRewards {
 				const capNote =
 					rowsShown < rowsTotal ? ` (showing latest ${rowsShown} of ${rowsTotal})` : "";
 				this.set_status(
-					`Live view — ${rowsTotal} redeemed referrals${capNote}. Updated ${rr_ago(
+					`Live view — ${rowsTotal} invites${capNote}. Updated ${rr_ago(
 						this.now,
 						this.now
 					)}.`
@@ -336,6 +346,14 @@ class ReferralRewards {
 				s.unrewarded === undefined
 					? this.rows.filter((r) => r.reward_status === "unrewarded").length
 					: s.unrewarded,
+			sent:
+				s.invites_sent_open === undefined
+					? this.rows.filter((r) => r.reward_status === "sent").length
+					: s.invites_sent_open,
+			expired:
+				s.invites_expired === undefined
+					? this.rows.filter((r) => r.reward_status === "expired").length
+					: s.invites_expired,
 		};
 		const html = RR_BUCKETS.map((b) => {
 			const active = b.key === this.active_bucket ? " active" : "";
@@ -387,13 +405,13 @@ class ReferralRewards {
                 <td><span class="rr-chip-st ${tone}">${esc(r.reward_status)}</span>${err}</td>
                 <td style="text-align:center">${paidMark(r.inviter_paid)}</td>
                 <td style="text-align:center">${paidMark(r.invitee_paid)}</td>
-                <td>${esc(rr_ago(r.rewarded_at || r.redeemed_at, this.now))}</td>
+                <td>${esc(rr_ago(r.rewarded_at || r.redeemed_at || r.created_at, this.now))}</td>
             </tr>`;
 			})
 			.join("");
 		this.page.main.find("#rr-table").html(`
             <div class="rr-card">
-                <div class="rr-count">Showing ${rows.length} referral${
+                <div class="rr-count">Showing ${rows.length} invite${
 			rows.length === 1 ? "" : "s"
 		}</div>
                 <div style="overflow-x:auto">

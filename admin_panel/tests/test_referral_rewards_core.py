@@ -139,7 +139,7 @@ def _fixture():
 			"invitee_rewarded_at": None,
 			"reward_error": None,
 		},
-		# sent but never redeemed — not in the table, counts toward funnel
+		# sent but never redeemed — a lifecycle table row, counts toward funnel
 		{
 			"invite_id": "i5",
 			"status": "SENT",
@@ -149,6 +149,7 @@ def _fixture():
 			"reward_status": None,
 			"reward_seq": None,
 			"reward_amount_cents": None,
+			"created_at": "2026-08-01T09:00:00",
 			"redeemed_at": None,
 			"rewarded_at": None,
 			"inviter_rewarded_at": None,
@@ -165,6 +166,7 @@ def _fixture():
 			"reward_status": None,
 			"reward_seq": None,
 			"reward_amount_cents": None,
+			"created_at": "2026-07-27T09:00:00",
 			"redeemed_at": None,
 			"rewarded_at": None,
 			"inviter_rewarded_at": None,
@@ -181,6 +183,7 @@ def _fixture():
 			"reward_status": None,
 			"reward_seq": None,
 			"reward_amount_cents": None,
+			"created_at": "2026-07-26T09:00:00",
 			"redeemed_at": None,
 			"rewarded_at": None,
 			"inviter_rewarded_at": None,
@@ -225,6 +228,8 @@ def test_summary_counts_and_disbursement():
 	assert s["pending"] == 1
 	assert s["unknown"] == 0
 	assert s["unrewarded"] == 1  # i4: accepted, KYC not approved yet
+	assert s["invites_sent_open"] == 1  # i5: delivered, awaiting redemption
+	assert s["invites_expired"] == 1  # i7
 	assert s["needs_reconciliation"] == 3  # partial + failed + pending + unknown
 
 	# disbursed: i1 both @ $5 = $10; i2 one @ $2.50 = $2.50; i8 both @ $5 = $10.
@@ -245,10 +250,12 @@ def test_expired_counts_as_sent_not_accepted():
 	funnel = {f["stage"]: f for f in out["funnel"]}
 
 	# i7 (EXPIRED) stays in the Sent denominator so Accepted% isn't inflated,
-	# but never counts as Accepted and never appears in the table.
+	# and never counts as Accepted. It DOES appear in the table — as a
+	# lifecycle row, not a reward row.
 	assert funnel["Sent"]["count"] == 7
 	assert funnel["Accepted"]["count"] == 5
-	assert "i7" not in {r["invite_id"] for r in out["rows"]}
+	i7 = next(r for r in out["rows"] if r["invite_id"] == "i7")
+	assert i7["reward_status"] == "expired"
 
 
 def test_disbursed_by_tier():
@@ -263,17 +270,19 @@ def test_disbursed_by_tier():
 	assert tiers[2.5]["dollars"] == 2.5
 
 
-def test_rows_only_accepted_join_usernames_and_flags():
+def test_rows_include_all_invites_join_usernames_and_flags():
 	invites, accounts = _fixture()
 	out = build_overview(invites, accounts, counter_seq=0)
 	rows = out["rows"]
 
-	# Only the 5 ACCEPTED invites appear (SENT/PENDING/EXPIRED excluded).
-	assert len(rows) == 5
-	assert {r["invite_id"] for r in rows} == {"i1", "i2", "i3", "i4", "i8"}
+	# EVERY invite is a row — redeemed ones carry the reward lifecycle,
+	# un-redeemed ones (SENT/PENDING/EXPIRED) the invite lifecycle.
+	assert len(rows) == 8
+	assert {r["invite_id"] for r in rows} == {f"i{n}" for n in range(1, 9)}
 
-	# Newest-redeemed first.
-	assert rows[0]["invite_id"] == "i4"
+	# Newest-first by redeemed_at, falling back to created_at for
+	# un-redeemed rows (i5 was created after every redemption).
+	assert [r["invite_id"] for r in rows] == ["i5", "i4", "i1", "i2", "i3", "i8", "i6", "i7"]
 
 	by_id = {r["invite_id"]: r for r in rows}
 	# usernames joined from accounts
@@ -292,6 +301,16 @@ def test_rows_only_accepted_join_usernames_and_flags():
 	assert by_id["i8"]["reward_status"] == "pending"
 	assert by_id["i8"]["inviter_paid"] is True
 	assert by_id["i8"]["invitee_paid"] is True
+	# lifecycle rows: reward column mirrors the invite status; the invitee cell
+	# falls back to the contact; the inviter username still joins.
+	assert by_id["i5"]["reward_status"] == "sent"
+	assert by_id["i5"]["invitee"] == "someone@x.com"
+	assert by_id["i5"]["inviter"] == "alice"
+	assert by_id["i5"]["reward_amount_dollars"] is None
+	assert by_id["i5"]["created_at"] == "2026-08-01T09:00:00"
+	# PENDING maps to "unsent" — NEVER "pending", which the IBEX reward bucket owns.
+	assert by_id["i6"]["reward_status"] == "unsent"
+	assert by_id["i7"]["reward_status"] == "expired"
 
 
 def test_row_cap_truncates_rows_but_not_summary():
@@ -299,18 +318,19 @@ def test_row_cap_truncates_rows_but_not_summary():
 	out = build_overview(invites, accounts, counter_seq=0, max_rows=2)
 
 	# Actionable rows (partial i2, failed i3, pending i8) always survive the
-	# cap; only paid/unrewarded rows consume the budget (here: none, since the
-	# 3 actionable rows already exceed max_rows=2). Summary covers everything.
+	# cap; paid/unrewarded AND un-redeemed lifecycle rows consume the budget
+	# (here: none, since the 3 actionable rows already exceed max_rows=2).
+	# Summary covers everything.
 	assert [r["invite_id"] for r in out["rows"]] == ["i2", "i3", "i8"]
-	assert out["summary"]["rows_total"] == 5
+	assert out["summary"]["rows_total"] == 8
 	assert out["summary"]["rows_shown"] == 3
 	assert out["summary"]["accepted"] == 5
 	assert out["summary"]["total_disbursed_dollars"] == 22.50
 
 	# Uncapped run reports full counts.
 	full = build_overview(invites, accounts, counter_seq=0)
-	assert full["summary"]["rows_total"] == 5
-	assert full["summary"]["rows_shown"] == 5
+	assert full["summary"]["rows_total"] == 8
+	assert full["summary"]["rows_shown"] == 8
 
 
 def test_row_cap_never_hides_actionable_rows():
@@ -442,3 +462,56 @@ def test_default_tiers_are_the_backend_schedule():
 		{"upToCount": 600, "amountCents": 250},
 		{"upToCount": 0, "amountCents": 100},
 	]
+
+
+def test_unredeemed_lifecycle_rows_consume_cap_budget():
+	# Lifecycle rows (sent/unsent/expired) are informational — they must consume
+	# the cap budget like paid rows, never bypass it like actionable rows do.
+	accounts = {}
+	invites = [
+		{
+			"invite_id": "sent-new",
+			"status": "SENT",
+			"inviter_id": None,
+			"redeemed_by_id": None,
+			"contact": "new@x.com",
+			"reward_status": None,
+			"reward_seq": None,
+			"reward_amount_cents": None,
+			"created_at": "2026-08-02T09:00:00",
+			"redeemed_at": None,
+			"rewarded_at": None,
+			"inviter_rewarded_at": None,
+			"invitee_rewarded_at": None,
+			"reward_error": None,
+		},
+		{
+			"invite_id": "revoked-1",  # a lifecycle status this page doesn't know
+			"status": "REVOKED",
+			"inviter_id": None,
+			"redeemed_by_id": None,
+			"contact": "rev@x.com",
+			"reward_status": None,
+			"reward_seq": None,
+			"reward_amount_cents": None,
+			"created_at": "2026-08-01T09:00:00",
+			"redeemed_at": None,
+			"rewarded_at": None,
+			"inviter_rewarded_at": None,
+			"invitee_rewarded_at": None,
+			"reward_error": None,
+		},
+	]
+
+	out = build_overview(invites, accounts, counter_seq=0, max_rows=1)
+	# Neither row is actionable, so the cap truncates to exactly 1 (the newest).
+	assert [r["invite_id"] for r in out["rows"]] == ["sent-new"]
+	assert out["summary"]["rows_total"] == 2
+	assert out["summary"]["rows_shown"] == 1
+
+	# Unknown lifecycle statuses lowercase into the reward column (fail-visible
+	# via the page's unknown-tone fallback), and never collide with "pending".
+	full = build_overview(invites, accounts, counter_seq=0)
+	by_id = {r["invite_id"]: r for r in full["rows"]}
+	assert by_id["revoked-1"]["reward_status"] == "revoked"
+	assert by_id["sent-new"]["reward_status"] == "sent"

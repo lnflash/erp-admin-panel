@@ -34,10 +34,14 @@ REWARDED_STATUSES = {"paid", "partial", "pending"}
 KNOWN_REWARD_STATUSES = ("paid", "partial", "failed", "processing", "pending")
 
 
-def _is_actionable(row_reward_status):
-	"""Rows ops must be able to reach: everything except clean 'paid' and
-	not-yet-rewarded. Unknown (drifted) statuses are actionable by definition."""
-	return row_reward_status not in ("paid", "unrewarded")
+def _is_actionable(row):
+	"""Rows ops must be able to reach: redeemed rows in any state except clean
+	'paid' and not-yet-rewarded. Unknown (drifted) reward statuses are actionable
+	by definition. Un-redeemed rows (sent/expired/...) are lifecycle info, never
+	actionable — they must not bypass the row cap."""
+	if row.get("status") != "ACCEPTED":
+		return False
+	return row.get("reward_status") not in ("paid", "unrewarded")
 
 
 def _tier_amount_cents(tiers, seq):
@@ -94,6 +98,8 @@ def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_ba
 	status_counts = {status: 0 for status in KNOWN_REWARD_STATUSES}
 	unknown = 0
 	unrewarded = 0
+	invites_sent_open = 0  # SENT: delivered, awaiting redemption
+	invites_expired = 0  # EXPIRED: never redeemed (or revoked)
 	total_invites = len(invites)
 	sent = 0
 	accepted = 0
@@ -135,42 +141,63 @@ def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_ba
 			bucket["count_parties"] += parties_paid
 			bucket["dollars"] += disbursed / 100.0
 
-		# The table shows only ACCEPTED (redeemed) invites — the ones eligible
-		# for a reward once the invitee's KYC is approved.
+		# Every invite is a table row. ACCEPTED (redeemed) rows carry the reward
+		# lifecycle; un-redeemed rows (SENT/EXPIRED/anything else) surface the
+		# invite lifecycle in the reward column instead — lowercased, so an
+		# unknown backend status renders fail-visible (the page tones unlisted
+		# values as warnings), matching the reward-status drift philosophy.
+		inviter = accounts.get(inv.get("inviter_id")) or {}
 		if status == "ACCEPTED":
 			if not reward_status:
 				unrewarded += 1
-			inviter = accounts.get(inv.get("inviter_id")) or {}
 			invitee = accounts.get(inv.get("redeemed_by_id")) or {}
-			rows.append(
-				{
-					"invite_id": inv.get("invite_id"),
-					"invitee": invitee.get("username") or inv.get("contact") or "—",
-					"inviter": inviter.get("username") or "—",
-					"status": status,
-					"reward_status": reward_status or "unrewarded",
-					"reward_amount_dollars": (amount_cents / 100.0) if amount_cents else None,
-					"reward_seq": inv.get("reward_seq"),
-					"redeemed_at": inv.get("redeemed_at"),
-					"rewarded_at": inv.get("rewarded_at"),
-					"inviter_paid": inviter_paid,
-					"invitee_paid": invitee_paid,
-					"reward_error": inv.get("reward_error"),
-				}
-			)
+			row_invitee = invitee.get("username") or inv.get("contact") or "—"
+			row_reward_status = reward_status or "unrewarded"
+		else:
+			row_invitee = inv.get("contact") or "—"
+			if status == "SENT":
+				invites_sent_open += 1
+				row_reward_status = "sent"
+			elif status == "EXPIRED":
+				invites_expired += 1
+				row_reward_status = "expired"
+			elif status == "PENDING":
+				# "unsent", NOT "pending": the IBEX reward-status bucket already
+				# owns "pending" — a lifecycle collision would leak these rows
+				# into the money-moved reconciliation filter.
+				row_reward_status = "unsent"
+			else:
+				row_reward_status = (status or "unknown").lower()
+		rows.append(
+			{
+				"invite_id": inv.get("invite_id"),
+				"invitee": row_invitee,
+				"inviter": inviter.get("username") or "—",
+				"status": status,
+				"reward_status": row_reward_status,
+				"reward_amount_dollars": (amount_cents / 100.0) if amount_cents else None,
+				"reward_seq": inv.get("reward_seq"),
+				"created_at": inv.get("created_at"),
+				"redeemed_at": inv.get("redeemed_at"),
+				"rewarded_at": inv.get("rewarded_at"),
+				"inviter_paid": inviter_paid,
+				"invitee_paid": invitee_paid,
+				"reward_error": inv.get("reward_error"),
+			}
+		)
 
-	rows.sort(key=lambda r: (r.get("redeemed_at") or ""), reverse=True)
+	rows.sort(key=lambda r: (r.get("redeemed_at") or r.get("created_at") or ""), reverse=True)
 	rows_total = len(rows)
 	if max_rows is not None and rows_total > max_rows:
 		# Actionable rows (failed/partial/pending/processing/unknown) must never
 		# be hidden by the cap — they are the rare rows ops has to reconcile.
 		# Only paid/unrewarded rows consume the cap budget; overall newest-first
 		# order is preserved by the single pass over the sorted list.
-		actionable_total = sum(1 for r in rows if _is_actionable(r["reward_status"]))
+		actionable_total = sum(1 for r in rows if _is_actionable(r))
 		budget = max(0, max_rows - actionable_total)
 		kept = []
 		for r in rows:
-			if _is_actionable(r["reward_status"]):
+			if _is_actionable(r):
 				kept.append(r)
 			elif budget > 0:
 				kept.append(r)
@@ -205,6 +232,8 @@ def build_overview(invites, accounts, counter_seq, tiers=REWARD_TIERS, wallet_ba
 		"pending": status_counts["pending"],
 		"unknown": unknown,
 		"unrewarded": unrewarded,
+		"invites_sent_open": invites_sent_open,
+		"invites_expired": invites_expired,
 		"needs_reconciliation": (
 			status_counts["partial"] + status_counts["failed"] + status_counts["pending"] + unknown
 		),
