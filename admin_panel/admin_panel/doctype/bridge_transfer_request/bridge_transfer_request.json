@@ -70,9 +70,10 @@
    "fieldname": "provider",
    "fieldtype": "Select",
    "label": "Provider",
-   "options": "Bridge",
+   "options": "Bridge\nFygaro",
    "read_only": 1,
-   "reqd": 1
+   "reqd": 1,
+   "in_list_view": 1
   },
   {
    "default": "USDT",
@@ -227,7 +228,7 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 0,
  "links": [],
- "modified": "2026-06-03 00:00:00.000000",
+ "modified": "2026-08-08 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Admin Panel",
  "name": "Bridge Transfer Request",

@@ -792,7 +792,7 @@ class TransferRequestsManager {
 			"Submitted",
 			"Actions",
 		];
-		const bridgeHeaders = ["Request ID", "Type", "Amount", "Status", "Failure", "Last Seen"];
+		const bridgeHeaders = ["Request ID", "Type", "Provider", "Amount", "Status", "Failure", "Last Seen"];
 		const headers = this.active_type === "bridge" ? bridgeHeaders : cashoutHeaders;
 
 		this.$cache.tableHead.html(`
@@ -1028,6 +1028,7 @@ class TransferRequestsManager {
             <tr class="bridge-row" data-request-id="${this.escapeHtml(req.name)}">
                 <td><strong>${this.escapeHtml(requestId)}</strong></td>
                 <td>${this.escapeHtml(req.transaction_type || "-")}</td>
+                <td>${this.escapeHtml(req.provider || "Bridge")}</td>
                 <td><strong>${this.escapeHtml(amountDisplay)}</strong></td>
                 <td><span class="modern-badge ${statusBadge}">${this.escapeHtml(
 			statusVal
@@ -1514,6 +1515,7 @@ class TransferRequestsManager {
                     <div class="col-md-6">
                         ${this.renderDetailItem("Request ID", req.request_id || req.name)}
                         ${this.renderDetailItem("Transaction Type", req.transaction_type)}
+                        ${this.renderDetailItem("Provider", req.provider || "Bridge")}
                         ${this.renderDetailItem(
 							"Status",
 							`<span class="modern-badge ${getBridgeStatusBadgeClass(
