@@ -792,7 +792,15 @@ class TransferRequestsManager {
 			"Submitted",
 			"Actions",
 		];
-		const bridgeHeaders = ["Request ID", "Type", "Provider", "Amount", "Status", "Failure", "Last Seen"];
+		const bridgeHeaders = [
+			"Request ID",
+			"Type",
+			"Provider",
+			"Amount",
+			"Status",
+			"Failure",
+			"Last Seen",
+		];
 		const headers = this.active_type === "bridge" ? bridgeHeaders : cashoutHeaders;
 
 		this.$cache.tableHead.html(`
