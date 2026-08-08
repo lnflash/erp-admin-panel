@@ -113,14 +113,29 @@ def get_transfer_pulse():
 		order_by="creation asc",
 		limit=1,
 	)
-	bridge_counts = {
-		key: frappe.db.count("Bridge Transfer Request", {"status": status})
-		for key, status in (
+
+	def audit_counts(provider, keys):
+		return {
+			key: frappe.db.count("Bridge Transfer Request", {"status": status, "provider": provider})
+			for key, status in keys
+		}
+
+	bridge_counts = audit_counts(
+		"Bridge",
+		(
 			("pending", "Pending"),
 			("fiat_received", "Fiat Received"),
 			("failed", "Failed"),
-		)
-	}
+		),
+	)
+	fygaro_counts = audit_counts(
+		"Fygaro",
+		(
+			("fiat_received", "Fiat Received"),
+			("completed", "Completed"),
+			("failed", "Failed"),
+		),
+	)
 	return {
 		"cashouts": {
 			"pending": frappe.db.count("Cashout", {"status": "Pending"}),
@@ -129,6 +144,7 @@ def get_transfer_pulse():
 			"oldest_id": oldest[0].name if oldest else None,
 		},
 		"bridge": bridge_counts,
+		"fygaro": fygaro_counts,
 		"now": str(frappe.utils.now_datetime()),
 	}
 

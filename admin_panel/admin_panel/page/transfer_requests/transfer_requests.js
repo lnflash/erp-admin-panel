@@ -340,6 +340,7 @@ class TransferRequestsManager {
                 <div class="transfer-tabs" role="tablist" aria-label="Transfer request type">
                     <button class="transfer-tab active" data-type="cashout" role="tab" aria-selected="true">Cashouts</button>
                     <button class="transfer-tab" data-type="bridge" role="tab" aria-selected="false">Bridge</button>
+                    <button class="transfer-tab" data-type="fygaro" role="tab" aria-selected="false">Card Top-Ups</button>
                 </div>
 
                 <!-- Queue pulse -->
@@ -717,7 +718,7 @@ class TransferRequestsManager {
 	}
 
 	switch_type(type) {
-		if (!["cashout", "bridge"].includes(type) || this.active_type === type) return;
+		if (!["cashout", "bridge", "fygaro"].includes(type) || this.active_type === type) return;
 		this.active_type = type;
 		this.current_page = 1;
 		this.selected_request = null;
@@ -730,31 +731,50 @@ class TransferRequestsManager {
 
 	update_type_controls() {
 		const isBridge = this.active_type === "bridge";
+		const isFygaro = this.active_type === "fygaro";
+		// Bridge and Card Top-Ups are both audit views over Bridge Transfer
+		// Request rows — one per provider; only the cashout tab differs.
+		const isAudit = isBridge || isFygaro;
 		this.page.main.find(".transfer-tab").removeClass("active").attr("aria-selected", "false");
 		this.page.main
 			.find(`.transfer-tab[data-type="${this.active_type}"]`)
 			.addClass("active")
 			.attr("aria-selected", "true");
 
-		this.$cache.tableTitle.text(isBridge ? "Bridge Transfer Requests" : "Cashout Requests");
+		this.$cache.tableTitle.text(
+			isFygaro
+				? "Card Top-Ups (Fygaro)"
+				: isBridge
+				? "Bridge Transfer Requests"
+				: "Cashout Requests"
+		);
 		this.$cache.searchInput.attr(
 			"placeholder",
-			isBridge
+			isFygaro
+				? "Search request, Fygaro transaction, account, or wallet ID"
+				: isBridge
 				? "Search request, Bridge transfer, account, or wallet ID"
 				: "Enter username or phone number"
 		);
 
+		// Card top-ups are Topup-only; the type filter is a Bridge concern.
 		this.$cache.filterTransactionType.toggle(isBridge);
 		this.$cache.noRequestsTitle.text(
-			isBridge ? "No Bridge transfer requests found" : "No cashout requests found"
+			isFygaro
+				? "No card top-ups found"
+				: isBridge
+				? "No Bridge transfer requests found"
+				: "No cashout requests found"
 		);
 		this.$cache.noRequestsBody.text(
-			isBridge
+			isFygaro
+				? "Fygaro card top-ups will appear here as payments arrive"
+				: isBridge
 				? "Bridge transfer audit records will appear here when received"
 				: "Cashout requests will appear here when submitted"
 		);
 
-		const options = isBridge
+		const options = isAudit
 			? [
 					"",
 					BridgeStatus.PENDING,
@@ -770,7 +790,7 @@ class TransferRequestsManager {
 					CashoutStatus.CANCELLED,
 					CashoutStatus.FAILED,
 			  ];
-		const labels = isBridge
+		const labels = isAudit
 			? ["Status (All)", "Pending", "Fiat Received", "Settled", "Completed", "Failed"]
 			: ["Status (All)", "Pending", "Paid", "Cancelled", "Failed"];
 		this.$cache.filterStatus.html(
@@ -793,7 +813,7 @@ class TransferRequestsManager {
 			"Actions",
 		];
 		const bridgeHeaders = ["Request ID", "Type", "Amount", "Status", "Failure", "Last Seen"];
-		const headers = this.active_type === "bridge" ? bridgeHeaders : cashoutHeaders;
+		const headers = this.active_type !== "cashout" ? bridgeHeaders : cashoutHeaders;
 
 		this.$cache.tableHead.html(`
             <tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr>
@@ -857,7 +877,22 @@ class TransferRequestsManager {
 	render_pulse() {
 		if (!this.pulse) return;
 		const tiles = [];
-		if (this.active_type === "bridge") {
+		if (this.active_type === "fygaro") {
+			const f = this.pulse.fygaro || {};
+			tiles.push({
+				label: "Fiat Received",
+				value: f.fiat_received ?? 0,
+				tone: f.fiat_received ? "warn" : "",
+				sub: f.fiat_received ? "awaiting credit" : "queue clear",
+			});
+			tiles.push({ label: "Completed", value: f.completed ?? 0 });
+			tiles.push({
+				label: "Failed",
+				value: f.failed ?? 0,
+				tone: f.failed ? "bad" : "",
+				sub: f.failed ? "needs review" : "none unresolved",
+			});
+		} else if (this.active_type === "bridge") {
 			const b = this.pulse.bridge || {};
 			tiles.push({ label: "Pending", value: b.pending ?? 0 });
 			tiles.push({ label: "Fiat Received", value: b.fiat_received ?? 0 });
@@ -900,7 +935,7 @@ class TransferRequestsManager {
 		// both datasets are in the payload; the fetch then freshens it
 		if (this.pulse) this.render_pulse();
 		this.load_pulse();
-		if (this.active_type === "bridge") {
+		if (this.active_type !== "cashout") {
 			this.load_bridge_requests();
 		} else {
 			this.load_cashout_requests();
@@ -1098,6 +1133,7 @@ class TransferRequestsManager {
 			args: {
 				status: this.$cache.filterStatus.val(),
 				transaction_type: this.$cache.filterTransactionType.val(),
+				provider: this.active_type === "fygaro" ? "Fygaro" : "Bridge",
 				query: this.$cache.searchInput.val().trim(),
 				page: this.current_page,
 				page_size: this.page_size,
@@ -1151,7 +1187,7 @@ class TransferRequestsManager {
 		this.$cache.requestsTbody.empty();
 		this.render_table_header();
 		const requests =
-			this.active_type === "bridge" ? this.bridge_requests : this.cashout_requests;
+			this.active_type !== "cashout" ? this.bridge_requests : this.cashout_requests;
 
 		if (requests.length === 0) {
 			this.$cache.requestsTable.hide();
@@ -1164,7 +1200,7 @@ class TransferRequestsManager {
 
 		requests.forEach((req) => {
 			this.$cache.requestsTbody.append(
-				this.active_type === "bridge"
+				this.active_type !== "cashout"
 					? this.create_bridge_request_row(req)
 					: this.create_request_row(req)
 			);
@@ -1172,7 +1208,7 @@ class TransferRequestsManager {
 	}
 
 	show_request_details(req) {
-		if (this.active_type === "bridge") {
+		if (this.active_type !== "cashout") {
 			this.show_bridge_details(req);
 			return;
 		}
@@ -1501,7 +1537,9 @@ class TransferRequestsManager {
 		panel
 			.find(".modern-card-title")
 			.html(
-				'<i class="fa fa-exchange" style="margin-right: 10px;"></i> Bridge Transfer Details'
+				req.provider === "Fygaro"
+					? '<i class="fa fa-credit-card" style="margin-right: 10px;"></i> Card Top-Up Details'
+					: '<i class="fa fa-exchange" style="margin-right: 10px;"></i> Bridge Transfer Details'
 			);
 
 		panel.find(".card-body").html(`
@@ -1514,6 +1552,7 @@ class TransferRequestsManager {
                     <div class="col-md-6">
                         ${this.renderDetailItem("Request ID", req.request_id || req.name)}
                         ${this.renderDetailItem("Transaction Type", req.transaction_type)}
+                        ${this.renderDetailItem("Provider", req.provider || "Bridge")}
                         ${this.renderDetailItem(
 							"Status",
 							`<span class="modern-badge ${getBridgeStatusBadgeClass(
@@ -1617,7 +1656,7 @@ class TransferRequestsManager {
 			return;
 		}
 
-		if (this.active_type === "bridge") {
+		if (this.active_type !== "cashout") {
 			this.current_page = 1;
 			this.load_bridge_requests();
 			return;
