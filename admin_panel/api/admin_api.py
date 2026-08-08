@@ -906,8 +906,10 @@ def search_cashout_account(id: str):
 @frappe.whitelist()
 @require_admin()
 @handle_api_errors
-def get_bridge_transfer_requests(status=None, transaction_type=None, query=None, page=1, page_size=10):
-	"""Get paginated Bridge transfer audit records for the Transfer Requests page."""
+def get_bridge_transfer_requests(
+	status=None, transaction_type=None, provider=None, query=None, page=1, page_size=10
+):
+	"""Get paginated provider transfer audit records for the Transfer Requests page."""
 	page = max(int(page or 1), 1)
 	page_size = min(max(int(page_size or 10), 1), 100)
 	offset = (page - 1) * page_size
@@ -917,6 +919,8 @@ def get_bridge_transfer_requests(status=None, transaction_type=None, query=None,
 		filters["status"] = status
 	if transaction_type:
 		filters["transaction_type"] = transaction_type
+	if provider:
+		filters["provider"] = provider
 
 	or_filters = None
 	if query:
