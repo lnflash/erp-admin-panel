@@ -113,11 +113,10 @@ def get_transfer_pulse():
 		order_by="creation asc",
 		limit=1,
 	)
+
 	def audit_counts(provider, keys):
 		return {
-			key: frappe.db.count(
-				"Bridge Transfer Request", {"status": status, "provider": provider}
-			)
+			key: frappe.db.count("Bridge Transfer Request", {"status": status, "provider": provider})
 			for key, status in keys
 		}
 
