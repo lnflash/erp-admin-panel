@@ -278,6 +278,62 @@ def customer_bundle(account: dict) -> dict:
 	}
 
 
+def load_payer_identities(account_refs, usernames) -> dict:
+	"""Batch-resolve payer identity for a page of transfer-request audit rows.
+
+	One accounts query (matching mongo ``_id``, account uuid ``id``, or
+	``username`` — the same handles find_account accepts) plus one users query
+	for phones. The returned dict is keyed by every join handle each account
+	answers to — str(_id), uuid, and username — so the caller can look rows up
+	by whichever ref it has (Bridge rows carry account_id, Fygaro rows often
+	only a customReference username).
+
+	Values: {account_id, username, phone, erp_party}.
+	"""
+	from bson import ObjectId
+
+	account_refs = [str(ref).strip() for ref in (account_refs or []) if ref]
+	usernames = [str(name).strip() for name in (usernames or []) if name]
+	if not account_refs and not usernames:
+		return {}
+
+	ors = []
+	object_ids = [ObjectId(ref) for ref in account_refs if ObjectId.is_valid(ref)]
+	if object_ids:
+		ors.append({"_id": {"$in": object_ids}})
+	if account_refs:
+		ors.append({"id": {"$in": account_refs}})
+	if usernames:
+		ors.append({"username": {"$in": usernames}})
+
+	db = _get_db()
+	accounts = list(
+		db.accounts.find(
+			{"$or": ors},
+			{"_id": 1, "id": 1, "username": 1, "kratosUserId": 1, "erpParty": 1},
+		)
+	)
+
+	kratos_ids = [a["kratosUserId"] for a in accounts if a.get("kratosUserId")]
+	phones = {}
+	if kratos_ids:
+		for user in db.users.find({"kratosUserId": {"$in": kratos_ids}}, {"kratosUserId": 1, "phone": 1}):
+			phones[user["kratosUserId"]] = user.get("phone")
+
+	out = {}
+	for account in accounts:
+		identity = {
+			"account_id": str(account["_id"]),
+			"username": account.get("username"),
+			"phone": phones.get(account.get("kratosUserId")),
+			"erp_party": account.get("erpParty"),
+		}
+		for key in (str(account["_id"]), account.get("id"), account.get("username")):
+			if key:
+				out[key] = identity
+	return out
+
+
 def load_invites() -> list:
 	"""Referral invites with their reward-payout fields.
 
