@@ -1066,7 +1066,10 @@ class TransferRequestsManager {
 		const amountDisplay = this.formatAmount(req.amount, req.currency);
 		const failureDisplay = req.failure_reason ? this.escapeHtml(req.failure_reason) : "-";
 		const requestId = req.request_id || req.name || "-";
-		const payerDisplay = req.payer_username || req.payer_name || "-";
+		// Route through payerValue so provider-sourced (unverified checkout)
+		// values are labeled in the table, not just the detail drawer.
+		const payerDisplay =
+			this.payerValue(req, "payer_username") || this.payerValue(req, "payer_name") || "-";
 
 		const row = $(`
             <tr class="bridge-row" data-request-id="${this.escapeHtml(req.name)}">

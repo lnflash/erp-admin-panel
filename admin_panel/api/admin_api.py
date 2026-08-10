@@ -7,7 +7,12 @@ import requests as requests_lib
 from .auth import audit_log, require_admin, require_financial, require_roles
 from .common import handle_api_errors
 from .graphql_client import GraphQLClient, GraphQLError
-from .transfer_identity_core import build_payer_fields, empty_payer_fields, parse_payload_identity
+from .transfer_identity_core import (
+	build_payer_fields,
+	collect_lookup_refs,
+	empty_payer_fields,
+	match_account_identity,
+)
 
 
 @frappe.whitelist()
@@ -910,27 +915,20 @@ def _attach_payer_identity(rows):
 	Batched per page: one mongo accounts+users lookup for the rows' account
 	ids / payload usernames (mongo_reader.load_payer_identities), plus one
 	ERPNext Customer query for erpParty-linked names/emails — never N queries.
-	Field priority and provider labeling live in transfer_identity_core; any
-	lookup failure leaves the payer_* fields blank.
+	Ref collection, identity matching, field priority, and provider labeling
+	all live in transfer_identity_core (pure, unit-tested); any lookup failure
+	leaves the payer_* fields blank.
 	"""
-	payload_identities = []
-	account_refs = set()
-	usernames = set()
 	for row in rows:
 		row.update(empty_payer_fields())
-		payload_identity = parse_payload_identity(row.get("raw_payload_json"))
-		payload_identities.append(payload_identity)
-		if row.get("account_id"):
-			account_refs.add(str(row["account_id"]))
-		elif payload_identity["username"]:
-			usernames.add(payload_identity["username"])
+	payload_identities, account_refs, usernames = collect_lookup_refs(rows)
 
 	identities = {}
 	if account_refs or usernames:
 		try:
 			from .mongo_reader import load_payer_identities
 
-			identities = load_payer_identities(sorted(account_refs), sorted(usernames))
+			identities = load_payer_identities(account_refs, usernames)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Transfer payer identity mongo lookup failed")
 
@@ -948,11 +946,7 @@ def _attach_payer_identity(rows):
 			frappe.log_error(frappe.get_traceback(), "Transfer payer Customer lookup failed")
 
 	for row, payload_identity in zip(rows, payload_identities, strict=True):
-		account_identity = None
-		if row.get("account_id"):
-			account_identity = identities.get(str(row["account_id"]))
-		if account_identity is None and payload_identity["username"]:
-			account_identity = identities.get(payload_identity["username"])
+		account_identity = match_account_identity(row, payload_identity, identities)
 		customer_info = customers.get((account_identity or {}).get("erp_party"))
 		row.update(
 			build_payer_fields(

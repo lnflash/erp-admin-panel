@@ -169,13 +169,24 @@ def test_audit_rows_carry_payer_identity_and_search_covers_raw_payload():
 	assert "_attach_payer_identity([dict(record) for record in records])" in api_py
 	assert "load_payer_identities" in api_py
 	assert "build_payer_fields" in api_py
+	# Ref collection and identity matching are pure + unit-tested in
+	# transfer_identity_core, not hand-rolled in the IO layer.
+	assert "collect_lookup_refs" in api_py
+	assert "match_account_identity" in api_py
 	assert '["raw_payload_json", "like", like_query]' in api_py
 
 
 def test_audit_table_and_detail_drawer_render_payer_identity():
 	js = read_text(PAGE_DIR / "transfer_requests.js")
 
-	assert "req.payer_username || req.payer_name" in js
+	# The table's Payer column must go through payerValue so provider-sourced
+	# (unverified checkout) values are labeled in the table, not only the drawer.
+	normalized = " ".join(js.split())
+	assert (
+		'const payerDisplay = this.payerValue(req, "payer_username") || '
+		'this.payerValue(req, "payer_name") || "-"' in normalized
+	)
+	assert "req.payer_username || req.payer_name" not in js
 	assert "payerValue(req, field, format)" in js
 	for field in ("payer_name", "payer_username", "payer_email", "payer_phone"):
 		assert f'this.payerValue(req, "{field}"' in js

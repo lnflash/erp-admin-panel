@@ -61,6 +61,47 @@ def parse_payload_identity(raw_payload_json):
 	return out
 
 
+def collect_lookup_refs(rows):
+	"""Payload identities + mongo lookup refs for a page of audit rows.
+
+	Every row contributes BOTH its account_id and its payload username when
+	present. Collecting the username even when the row has an account_id keeps
+	the merge phase's username fallback (match_account_identity) deterministic
+	when the account_id is stale and resolves nothing — otherwise the fallback
+	would only work when a *different* row on the same page happened to load
+	that username. Still a single mongo query either way.
+
+	Returns (payload_identities, account_refs, usernames): the identity list is
+	parallel to ``rows``; the ref lists are deduped and sorted.
+	"""
+	payload_identities = []
+	account_refs = set()
+	usernames = set()
+	for row in rows:
+		payload_identity = parse_payload_identity(row.get("raw_payload_json"))
+		payload_identities.append(payload_identity)
+		if row.get("account_id"):
+			account_refs.add(str(row["account_id"]))
+		if payload_identity["username"]:
+			usernames.add(payload_identity["username"])
+	return payload_identities, sorted(account_refs), sorted(usernames)
+
+
+def match_account_identity(row, payload_identity, identities):
+	"""Pick one row's account identity from the batch-lookup results.
+
+	The row's account_id match wins; a row whose account_id missed (stale or
+	foreign id) falls back to its own payload username. Returns None when
+	neither resolves.
+	"""
+	account_identity = None
+	if row.get("account_id"):
+		account_identity = identities.get(str(row["account_id"]))
+	if account_identity is None and (payload_identity or {}).get("username"):
+		account_identity = identities.get(payload_identity["username"])
+	return account_identity
+
+
 def build_payer_fields(payload_identity=None, account_identity=None, customer_info=None):
 	"""Merge account truth + ERP Customer + provider payload into payer_* fields.
 
