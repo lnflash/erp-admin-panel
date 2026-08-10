@@ -7,6 +7,12 @@ import requests as requests_lib
 from .auth import audit_log, require_admin, require_financial, require_roles
 from .common import handle_api_errors
 from .graphql_client import GraphQLClient, GraphQLError
+from .transfer_identity_core import (
+	build_payer_fields,
+	collect_lookup_refs,
+	empty_payer_fields,
+	match_account_identity,
+)
 
 
 @frappe.whitelist()
@@ -903,6 +909,56 @@ def search_cashout_account(id: str):
 	return [_enrich_cashout(r) for r in records]
 
 
+def _attach_payer_identity(rows):
+	"""Best-effort payer enrichment for the audit tabs — never breaks the page.
+
+	Batched per page: one mongo accounts+users lookup for the rows' account
+	ids / payload usernames (mongo_reader.load_payer_identities), plus one
+	ERPNext Customer query for erpParty-linked names/emails — never N queries.
+	Ref collection, identity matching, field priority, and provider labeling
+	all live in transfer_identity_core (pure, unit-tested); any lookup failure
+	leaves the account-derived fields blank; provider-payload fallbacks still
+	apply (labeled).
+	"""
+	for row in rows:
+		row.update(empty_payer_fields())
+	payload_identities, account_refs, usernames = collect_lookup_refs(rows)
+
+	identities = {}
+	if account_refs or usernames:
+		try:
+			from .mongo_reader import load_payer_identities
+
+			identities = load_payer_identities(account_refs, usernames)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "Transfer payer identity mongo lookup failed")
+
+	customers = {}
+	erp_parties = sorted({i["erp_party"] for i in identities.values() if i.get("erp_party")})
+	if erp_parties:
+		try:
+			for customer in frappe.get_all(
+				"Customer",
+				filters=[["name", "in", erp_parties]],
+				fields=["name", "customer_name", "mobile_no", "email_id"],
+			):
+				customers[customer["name"]] = customer
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "Transfer payer Customer lookup failed")
+
+	for row, payload_identity in zip(rows, payload_identities, strict=True):
+		account_identity = match_account_identity(row, payload_identity, identities)
+		customer_info = customers.get((account_identity or {}).get("erp_party"))
+		row.update(
+			build_payer_fields(
+				payload_identity=payload_identity,
+				account_identity=account_identity,
+				customer_info=customer_info,
+			)
+		)
+	return rows
+
+
 @frappe.whitelist()
 @require_admin()
 @handle_api_errors
@@ -933,6 +989,9 @@ def get_bridge_transfer_requests(
 			["wallet_id", "like", like_query],
 			["ibex_tx_hash", "like", like_query],
 			["source_event_id", "like", like_query],
+			# Fygaro payloads carry the payer's username (customReference) and
+			# client name/email — searching those must find card top-ups too.
+			["raw_payload_json", "like", like_query],
 		]
 
 	fields = [
@@ -984,7 +1043,7 @@ def get_bridge_transfer_requests(
 
 	total_count = len(count_rows)
 	return {
-		"data": [dict(record) for record in records],
+		"data": _attach_payer_identity([dict(record) for record in records]),
 		"total": total_count,
 		"page": page,
 		"page_size": page_size,

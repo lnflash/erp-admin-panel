@@ -101,8 +101,14 @@ def test_transfer_requests_bridge_tab_stays_read_only_without_actions_column():
 
 	assert "const cashoutHeaders" in js
 	assert "const bridgeHeaders" in js
-	assert 'const headers = this.active_type === "bridge" ? bridgeHeaders : cashoutHeaders' in js
-	assert 'const bridgeHeaders = ["Request ID", "Type", "Amount", "Status", "Failure", "Last Seen"]' in js
+	# Both audit tabs (Bridge + Card Top-Ups) share bridgeHeaders; only the
+	# cashout tab gets the actions column.
+	assert 'const headers = this.active_type !== "cashout" ? bridgeHeaders : cashoutHeaders' in js
+	normalized = " ".join(js.split())
+	assert (
+		'const bridgeHeaders = [ "Request ID", "Payer", "Type", "Amount", "Status", "Failure", "Last Seen", ]'
+		in normalized
+	)
 
 
 def test_admin_api_exposes_cashout_action_endpoints():
@@ -154,3 +160,34 @@ def test_cashout_details_render_remarks_from_cashout_record():
 	assert '<span class="detail-label">Remarks</span>' in js
 	assert "detail-remarks" in js
 	assert 'panel.find(".detail-remarks").text(req.remarks || "-")' in js
+
+
+def test_audit_rows_carry_payer_identity_and_search_covers_raw_payload():
+	api_py = read_text(ADMIN_PANEL / "api" / "admin_api.py")
+
+	assert "def _attach_payer_identity" in api_py
+	assert "_attach_payer_identity([dict(record) for record in records])" in api_py
+	assert "load_payer_identities" in api_py
+	assert "build_payer_fields" in api_py
+	# Ref collection and identity matching are pure + unit-tested in
+	# transfer_identity_core, not hand-rolled in the IO layer.
+	assert "collect_lookup_refs" in api_py
+	assert "match_account_identity" in api_py
+	assert '["raw_payload_json", "like", like_query]' in api_py
+
+
+def test_audit_table_and_detail_drawer_render_payer_identity():
+	js = read_text(PAGE_DIR / "transfer_requests.js")
+
+	# The table's Payer column must go through payerValue so provider-sourced
+	# (unverified checkout) values are labeled in the table, not only the drawer.
+	normalized = " ".join(js.split())
+	assert (
+		'const payerDisplay = this.payerValue(req, "payer_username") || '
+		'this.payerValue(req, "payer_name") || "-"' in normalized
+	)
+	assert "req.payer_username || req.payer_name" not in js
+	assert "payerValue(req, field, format)" in js
+	for field in ("payer_name", "payer_username", "payer_email", "payer_phone"):
+		assert f'this.payerValue(req, "{field}"' in js
+	assert "(from provider)" in js

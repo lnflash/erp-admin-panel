@@ -812,7 +812,15 @@ class TransferRequestsManager {
 			"Submitted",
 			"Actions",
 		];
-		const bridgeHeaders = ["Request ID", "Type", "Amount", "Status", "Failure", "Last Seen"];
+		const bridgeHeaders = [
+			"Request ID",
+			"Payer",
+			"Type",
+			"Amount",
+			"Status",
+			"Failure",
+			"Last Seen",
+		];
 		const headers = this.active_type !== "cashout" ? bridgeHeaders : cashoutHeaders;
 
 		this.$cache.tableHead.html(`
@@ -1058,10 +1066,15 @@ class TransferRequestsManager {
 		const amountDisplay = this.formatAmount(req.amount, req.currency);
 		const failureDisplay = req.failure_reason ? this.escapeHtml(req.failure_reason) : "-";
 		const requestId = req.request_id || req.name || "-";
+		// Route through payerValue so provider-sourced (unverified checkout)
+		// values are labeled in the table, not just the detail drawer.
+		const payerDisplay =
+			this.payerValue(req, "payer_username") || this.payerValue(req, "payer_name") || "-";
 
 		const row = $(`
             <tr class="bridge-row" data-request-id="${this.escapeHtml(req.name)}">
                 <td><strong>${this.escapeHtml(requestId)}</strong></td>
+                <td>${this.escapeHtml(payerDisplay)}</td>
                 <td>${this.escapeHtml(req.transaction_type || "-")}</td>
                 <td><strong>${this.escapeHtml(amountDisplay)}</strong></td>
                 <td><span class="modern-badge ${statusBadge}">${this.escapeHtml(
@@ -1576,6 +1589,29 @@ class TransferRequestsManager {
 
             <div class="detail-section mb-4">
                 <h6 class="section-header">
+                    <i class="fa fa-user" style="margin-right: 8px; color: var(--color-primary);"></i>
+                    Payer
+                </h6>
+                <div class="row">
+                    <div class="col-md-6">
+                        ${this.renderDetailItem("Full Name", this.payerValue(req, "payer_name"))}
+                        ${this.renderDetailItem(
+							"Username",
+							this.payerValue(req, "payer_username")
+						)}
+                    </div>
+                    <div class="col-md-6">
+                        ${this.renderDetailItem("Email", this.payerValue(req, "payer_email"))}
+                        ${this.renderDetailItem(
+							"Phone",
+							this.payerValue(req, "payer_phone", (v) => this.formatPhone(v))
+						)}
+                    </div>
+                </div>
+            </div>
+
+            <div class="detail-section mb-4">
+                <h6 class="section-header">
                     <i class="fa fa-link" style="margin-right: 8px; color: var(--color-primary);"></i>
                     References
                 </h6>
@@ -1715,6 +1751,17 @@ class TransferRequestsManager {
 	formatPhone(phone) {
 		if (!phone) return "-";
 		return phone.replace(/^(\d{3})(\d{3})(\d{2})(\d{2})$/, "+$1 $2 $3 $4");
+	}
+
+	// Payer identity is resolved server-side (mongo account / ERP customer
+	// first, provider payload as fallback). Values that came from the provider
+	// payload are unverified checkout input, so they get labeled.
+	payerValue(req, field, format) {
+		const raw = req[field];
+		if (!raw) return "";
+		const value = format ? format(raw) : raw;
+		const fromProvider = (req.payer_provider_fields || []).includes(field);
+		return fromProvider ? `${value} (from provider)` : `${value}`;
 	}
 
 	formatDateTime(dt) {
