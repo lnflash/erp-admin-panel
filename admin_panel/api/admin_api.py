@@ -917,7 +917,8 @@ def _attach_payer_identity(rows):
 	ERPNext Customer query for erpParty-linked names/emails — never N queries.
 	Ref collection, identity matching, field priority, and provider labeling
 	all live in transfer_identity_core (pure, unit-tested); any lookup failure
-	leaves the payer_* fields blank.
+	leaves the account-derived fields blank; provider-payload fallbacks still
+	apply (labeled).
 	"""
 	for row in rows:
 		row.update(empty_payer_fields())
