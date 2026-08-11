@@ -6,6 +6,7 @@ import requests as requests_lib
 
 from .auth import audit_log, require_admin, require_financial, require_roles
 from .common import handle_api_errors
+from .fygaro_topup_core import rejection_reason
 from .graphql_client import GraphQLClient, GraphQLError
 from .transfer_identity_core import (
 	build_payer_fields,
@@ -1071,15 +1072,14 @@ def _load_fygaro_topup_for_status_action(request_id, action):
 		frappe.throw(f"No card top-up found for request '{request_id}'.")
 
 	doc = frappe.get_doc("Bridge Transfer Request", name, for_update=True)
-	if doc.provider != "Fygaro":
-		frappe.throw(f"Only a Fygaro card top-up can be {action}.")
-	if doc.status != "Fiat Received":
-		frappe.throw(f"Only a Fygaro top-up in 'Fiat Received' can be {action}.")
+	reason = rejection_reason(doc.provider, doc.status, action)
+	if reason:
+		frappe.throw(reason)
 	return doc
 
 
 @frappe.whitelist()
-@require_admin()
+@require_financial()
 @handle_api_errors
 def complete_fygaro_topup(request_id, final_amount=None, wallet_id=None):
 	"""Record a manually-credited Fygaro card top-up as Completed.
@@ -1107,7 +1107,7 @@ def complete_fygaro_topup(request_id, final_amount=None, wallet_id=None):
 
 
 @frappe.whitelist()
-@require_admin()
+@require_financial()
 @handle_api_errors
 def cancel_fygaro_topup(request_id, reason=None):
 	"""Record a Fygaro card top-up as Cancelled (it will not be credited).

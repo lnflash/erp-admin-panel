@@ -43,26 +43,38 @@ def test_admin_api_exposes_record_only_topup_actions():
 	assert "def cancel_fygaro_topup(request_id, reason=None):" in api_py
 
 
-def test_topup_actions_use_admin_decorator_stack():
+def test_topup_actions_use_financial_decorator_stack():
 	api_py = read_text(ADMIN_PANEL / "api" / "admin_api.py")
 	normalized = " ".join(api_py.split())
 
+	# These stamp a top-up Completed / Cancelled — the same money-credited trust
+	# boundary as settling a cashout — so they must carry @require_financial(),
+	# which excludes the weaker Flash Admin role, exactly like the cashout
+	# settlement endpoints (create_cashout_request, confirm_cashout_payment,
+	# complete_cashout).
 	for fn in ("complete_fygaro_topup", "cancel_fygaro_topup"):
 		assert (
-			f"@frappe.whitelist() @require_admin() @handle_api_errors def {fn}(" in normalized
-		), f"{fn} must carry the whitelist/require_admin/handle_api_errors stack"
+			f"@frappe.whitelist() @require_financial() @handle_api_errors def {fn}(" in normalized
+		), f"{fn} must carry the whitelist/require_financial/handle_api_errors stack"
 
 
-def test_topup_actions_guard_on_fygaro_and_fiat_received():
+def test_topup_actions_wire_the_core_eligibility_guard():
+	"""The loader must delegate the allow/reject decision to fygaro_topup_core.
+
+	Correctness of the allow/reject matrix itself is covered behaviorally in
+	test_fygaro_topup_core.py; this only pins that admin_api actually calls it
+	(rather than re-implementing a drifting inline guard).
+	"""
 	api_py = read_text(ADMIN_PANEL / "api" / "admin_api.py")
 
-	# Shared guard: reject anything that is not a Fygaro row in Fiat Received.
-	assert 'if doc.provider != "Fygaro":' in api_py
-	assert 'if doc.status != "Fiat Received":' in api_py
-	assert "Only a Fygaro top-up in 'Fiat Received' can be" in api_py
+	# The pure predicate lives in the core module and is called from the loader.
+	assert "from .fygaro_topup_core import rejection_reason" in api_py
+	assert "reason = rejection_reason(doc.provider, doc.status, action)" in api_py
 	assert "_load_fygaro_topup_for_status_action" in api_py
-	# The row is looked up by the unique request_id, not the docname.
+	# The row is looked up by the unique request_id, not the docname, under a
+	# for_update lock so a concurrent double-complete serializes.
 	assert 'frappe.db.get_value("Bridge Transfer Request", {"request_id": request_id}, "name")' in api_py
+	assert 'frappe.get_doc("Bridge Transfer Request", name, for_update=True)' in api_py
 
 
 def test_complete_sets_completed_and_optional_amount_and_wallet():
