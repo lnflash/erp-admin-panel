@@ -105,8 +105,13 @@ def test_fygaro_settings_groups_fields_with_section_breaks():
 def test_bridge_transfer_request_exposes_fee_breakdown_fields():
 	fields = fields_by_name(json.loads((BRIDGE_DIR / "bridge_transfer_request.json").read_text()))
 
-	assert fields["processor_fee"]["fieldtype"] == "Currency"
-	assert fields["flash_fee"]["fieldtype"] == "Currency"
+	# Data (not Currency) so an uncomputed fee stays NULL instead of defaulting
+	# to 0.0. Currency can't tell "not computed" from a genuine 0.00; the panel
+	# needs that distinction to render "Pending" for a Fygaro row created before
+	# the backend writes fees, rather than a "USD 0.00" that fails to reconcile
+	# against Gross/Net. These match the other amount fields, all Data-typed.
+	assert fields["processor_fee"]["fieldtype"] == "Data"
+	assert fields["flash_fee"]["fieldtype"] == "Data"
 	# Gross paid and net credited already exist and are reused by the backend.
 	assert "initial_amount" in fields
 	assert "final_amount" in fields
@@ -133,21 +138,48 @@ def test_transfer_requests_drawer_renders_fee_breakdown():
 
 
 def test_fees_section_gates_on_provider_not_fee_presence():
-	"""The section must hide for Bridge rows.
+	"""The whole section must hide for Bridge rows.
 
-	The fee fields are Currency, so unset Bridge rows come back as 0.0 (not
-	NULL). Gating on fee *presence* would render "USD 0.00" fees on every
-	Bridge transfer; the gate has to key on the row being a Fygaro card
-	top-up. This asserts on the extracted method body so an unrelated
-	provider check elsewhere in the file can't satisfy it.
+	Only Fygaro (card) top-ups carry a fee breakdown; Bridge transfers never
+	do. The gate keys on the row being a Fygaro top-up, not on whether the fee
+	fields happen to hold a value — a Fygaro row with not-yet-computed fees
+	still shows the section (with a "Pending" fee, see the test below), and a
+	Bridge row never does. This asserts on the extracted method body so an
+	unrelated provider check elsewhere in the file can't satisfy it.
 	"""
 	body = extract_js_function(read_text(PAGE_DIR / "transfer_requests.js"), "renderFeesSection")
 
 	# Early-returns empty for anything that isn't a Fygaro card top-up.
 	assert 'req.provider !== "Fygaro"' in body
 	assert 'return ""' in body
-	# And does NOT gate on fee presence (the regressed behavior).
+	# And does NOT hide the whole section on fee presence (the regressed
+	# behavior that keyed the section off a per-fee value check).
 	assert "hasValue" not in body
+
+
+def test_fees_section_marks_uncomputed_fygaro_fees_as_pending():
+	"""A Fygaro row can exist before the backend computes its fees.
+
+	processor_fee/flash_fee are Data-typed, so an uncomputed fee is NULL/empty
+	(not 0.00). The panel must surface that as "Pending" rather than format it
+	as "USD 0.00": a zero fee makes Gross minus fees fail to reconcile against
+	Net, showing the operator a breakdown that visibly doesn't add up.
+	"""
+	js = read_text(PAGE_DIR / "transfer_requests.js")
+	fees_body = extract_js_function(js, "renderFeesSection")
+	fee_display_body = extract_js_function(js, "feeDisplay")
+
+	# Fee rows route through feeDisplay, not raw formatAmount, so an uncomputed
+	# fee can be labeled instead of formatted as a currency amount.
+	assert "this.feeDisplay(req.processor_fee" in fees_body
+	assert "this.feeDisplay(req.flash_fee" in fees_body
+	# Gross and Net stay as formatted amounts (they are set at row creation).
+	assert "this.formatAmount(req.initial_amount" in fees_body
+	assert "this.formatAmount(req.final_amount" in fees_body
+	# feeDisplay distinguishes an uncomputed (NULL/empty) fee from a real 0.00
+	# and labels the uncomputed case "Pending".
+	assert '"Pending"' in fee_display_body
+	assert "formatAmount" in fee_display_body
 
 
 def test_fygaro_settings_controller_validates_policy_invariants():
