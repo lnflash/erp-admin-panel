@@ -1,0 +1,120 @@
+{
+ "actions": [],
+ "creation": "2026-08-10 00:00:00.000000",
+ "custom": 0,
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "processor_fees_section",
+  "processor",
+  "processor_fee_percent",
+  "processor_fee_fixed",
+  "flash_fee_section",
+  "flash_margin_percent",
+  "flash_margin_fixed",
+  "auto_credit_section",
+  "auto_credit_enabled",
+  "auto_credit_limit",
+  "minimum_topup"
+ ],
+ "fields": [
+  {
+   "fieldname": "processor_fees_section",
+   "fieldtype": "Section Break",
+   "label": "Processor Fees"
+  },
+  {
+   "default": "PayPal",
+   "description": "Card processor whose fees fund the top-up (e.g. PayPal).",
+   "fieldname": "processor",
+   "fieldtype": "Data",
+   "label": "Processor"
+  },
+  {
+   "default": "2.99",
+   "description": "Percentage the processor charges on each top-up (e.g. 2.99 = 2.99%).",
+   "fieldname": "processor_fee_percent",
+   "fieldtype": "Float",
+   "label": "Processor Fee (%)"
+  },
+  {
+   "default": "0.49",
+   "description": "Flat per-transaction processor fee in USD.",
+   "fieldname": "processor_fee_fixed",
+   "fieldtype": "Currency",
+   "label": "Processor Fee (Fixed, USD)"
+  },
+  {
+   "fieldname": "flash_fee_section",
+   "fieldtype": "Section Break",
+   "label": "Flash Fee"
+  },
+  {
+   "default": "2.0",
+   "description": "Flash margin applied on top of processor fees (percent).",
+   "fieldname": "flash_margin_percent",
+   "fieldtype": "Float",
+   "label": "Flash Margin (%)"
+  },
+  {
+   "default": "0.00",
+   "description": "Flat Flash margin per transaction in USD.",
+   "fieldname": "flash_margin_fixed",
+   "fieldtype": "Currency",
+   "label": "Flash Margin (Fixed, USD)"
+  },
+  {
+   "fieldname": "auto_credit_section",
+   "fieldtype": "Section Break",
+   "label": "Auto-Credit Controls"
+  },
+  {
+   "default": "0",
+   "description": "When enabled, gross top-ups at or below the limit are credited automatically. Off by default.",
+   "fieldname": "auto_credit_enabled",
+   "fieldtype": "Check",
+   "label": "Auto-Credit Enabled"
+  },
+  {
+   "default": "500.00",
+   "description": "Gross top-ups above this amount (USD) always go to manual review.",
+   "fieldname": "auto_credit_limit",
+   "fieldtype": "Currency",
+   "label": "Auto-Credit Limit (USD)"
+  },
+  {
+   "default": "10.00",
+   "description": "Smallest allowed top-up amount in USD.",
+   "fieldname": "minimum_topup",
+   "fieldtype": "Currency",
+   "label": "Minimum Top-Up (USD)"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-08-10 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Admin Panel",
+ "name": "Fygaro Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Accounts Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

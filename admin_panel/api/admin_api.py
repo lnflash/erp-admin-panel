@@ -1008,6 +1008,8 @@ def get_bridge_transfer_requests(
 		"initial_amount",
 		"subtotal_amount",
 		"final_amount",
+		"processor_fee",
+		"flash_fee",
 		"account_id",
 		"wallet_id",
 		"bridge_customer_id",

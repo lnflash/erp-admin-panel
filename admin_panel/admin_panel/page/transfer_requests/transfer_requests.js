@@ -1587,6 +1587,8 @@ class TransferRequestsManager {
                 </div>
             </div>
 
+            ${this.renderFeesSection(req)}
+
             <div class="detail-section mb-4">
                 <h6 class="section-header">
                     <i class="fa fa-user" style="margin-right: 8px; color: var(--color-primary);"></i>
@@ -1776,6 +1778,69 @@ class TransferRequestsManager {
 			minimumFractionDigits: 2,
 			maximumFractionDigits: 8,
 		})}`.trim();
+	}
+
+	// Fee breakdown for card top-ups. Bridge rows carry no processor/flash fee,
+	// so the section is omitted for any non-Fygaro provider.
+	renderFeesSection(req) {
+		// Gate on the row being a card top-up, not on fee presence. Only Fygaro
+		// (card) top-ups carry a fee breakdown; Bridge transfers never do.
+		if (req.provider !== "Fygaro") {
+			return "";
+		}
+		// A Fygaro row can be created before the backend computes its fees
+		// (historical rows, or the window where this panel ships ahead of the
+		// flash-backend change). processor_fee/flash_fee are Data-typed, so an
+		// uncomputed fee is NULL/empty rather than 0.0 — feeDisplay surfaces
+		// that as "Pending" so the operator never sees a "USD 0.00" breakdown
+		// where Gross minus fees fails to reconcile against Net.
+		return `
+            <div class="detail-section mb-4">
+                <h6 class="section-header">
+                    <i class="fa fa-money" style="margin-right: 8px; color: var(--color-primary);"></i>
+                    Fees
+                </h6>
+                <div class="row">
+                    <div class="col-md-6">
+                        ${this.renderDetailItem(
+							"Gross",
+							this.formatAmount(req.initial_amount, req.currency),
+							false,
+							true
+						)}
+                        ${this.renderDetailItem(
+							"Processor Fee",
+							this.feeDisplay(req.processor_fee, req.currency),
+							false,
+							true
+						)}
+                    </div>
+                    <div class="col-md-6">
+                        ${this.renderDetailItem(
+							"Flash Fee",
+							this.feeDisplay(req.flash_fee, req.currency),
+							false,
+							true
+						)}
+                        ${this.renderDetailItem(
+							"Net Credited",
+							this.formatAmount(req.final_amount, req.currency),
+							false,
+							true
+						)}
+                    </div>
+                </div>
+            </div>
+        `;
+	}
+
+	// A card fee is only meaningful once the backend computes it. The Data-typed
+	// fee fields distinguish "not computed yet" (NULL/empty) from a genuine 0.00,
+	// so an uncomputed fee is labeled "Pending" rather than formatted as
+	// "USD 0.00" — which would make Gross minus fees not reconcile against Net.
+	feeDisplay(amount, currency) {
+		if (amount === null || amount === undefined || amount === "") return "Pending";
+		return this.formatAmount(amount, currency);
 	}
 
 	renderDetailItem(label, value, allowHtml = false, isAmount = false) {
