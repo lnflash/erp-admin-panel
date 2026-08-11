@@ -1587,6 +1587,8 @@ class TransferRequestsManager {
                 </div>
             </div>
 
+            ${this.renderFeesSection(req)}
+
             <div class="detail-section mb-4">
                 <h6 class="section-header">
                     <i class="fa fa-user" style="margin-right: 8px; color: var(--color-primary);"></i>
@@ -1776,6 +1778,53 @@ class TransferRequestsManager {
 			minimumFractionDigits: 2,
 			maximumFractionDigits: 8,
 		})}`.trim();
+	}
+
+	// Fee breakdown for card top-ups. Bridge rows carry no processor/flash fee,
+	// so the section is omitted unless at least one fee value is present.
+	renderFeesSection(req) {
+		const hasValue = (v) => v !== null && v !== undefined && v !== "";
+		if (!hasValue(req.processor_fee) && !hasValue(req.flash_fee)) {
+			return "";
+		}
+		return `
+            <div class="detail-section mb-4">
+                <h6 class="section-header">
+                    <i class="fa fa-money" style="margin-right: 8px; color: var(--color-primary);"></i>
+                    Fees
+                </h6>
+                <div class="row">
+                    <div class="col-md-6">
+                        ${this.renderDetailItem(
+							"Gross",
+							this.formatAmount(req.initial_amount, req.currency),
+							false,
+							true
+						)}
+                        ${this.renderDetailItem(
+							"Processor Fee",
+							this.formatAmount(req.processor_fee, req.currency),
+							false,
+							true
+						)}
+                    </div>
+                    <div class="col-md-6">
+                        ${this.renderDetailItem(
+							"Flash Fee",
+							this.formatAmount(req.flash_fee, req.currency),
+							false,
+							true
+						)}
+                        ${this.renderDetailItem(
+							"Net Credited",
+							this.formatAmount(req.final_amount, req.currency),
+							false,
+							true
+						)}
+                    </div>
+                </div>
+            </div>
+        `;
 	}
 
 	renderDetailItem(label, value, allowHtml = false, isAmount = false) {
