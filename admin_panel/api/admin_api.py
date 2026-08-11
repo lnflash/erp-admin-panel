@@ -1053,6 +1053,84 @@ def get_bridge_transfer_requests(
 	}
 
 
+def _load_fygaro_topup_for_status_action(request_id, action):
+	"""Load a Fygaro card top-up that is eligible for an operator status action.
+
+	These actions are record-only: the operator has already sent (or decided not
+	to send) the top-up to the user's wallet out of band, and this only stamps
+	the audit row. The guard blocks re-completing an already-Completed row,
+	acting on a Bridge row, or touching any record that is not in the
+	actionable ``Fiat Received`` state.
+	"""
+	request_id = (request_id or "").strip()
+	if not request_id:
+		frappe.throw("Request ID is required.")
+
+	name = frappe.db.get_value("Bridge Transfer Request", {"request_id": request_id}, "name")
+	if not name:
+		frappe.throw(f"No card top-up found for request '{request_id}'.")
+
+	doc = frappe.get_doc("Bridge Transfer Request", name, for_update=True)
+	if doc.provider != "Fygaro":
+		frappe.throw(f"Only a Fygaro card top-up can be {action}.")
+	if doc.status != "Fiat Received":
+		frappe.throw(f"Only a Fygaro top-up in 'Fiat Received' can be {action}.")
+	return doc
+
+
+@frappe.whitelist()
+@require_admin()
+@handle_api_errors
+def complete_fygaro_topup(request_id, final_amount=None, wallet_id=None):
+	"""Record a manually-credited Fygaro card top-up as Completed.
+
+	Record-only: the operator has already sent the top-up to the user's wallet
+	out of band; this stamps the audit row so it stops showing as outstanding.
+	No money moves, no IBEX, no external calls.
+	"""
+	doc = _load_fygaro_topup_for_status_action(request_id, "completed")
+
+	doc.status = "Completed"
+	if final_amount is not None and str(final_amount).strip() != "":
+		doc.final_amount = final_amount
+	if wallet_id is not None and str(wallet_id).strip() != "":
+		doc.wallet_id = wallet_id
+	doc.save()
+
+	audit_log(
+		"complete_fygaro_topup",
+		"Bridge Transfer Request",
+		doc.name,
+		{"request_id": doc.request_id, "final_amount": doc.final_amount, "wallet_id": doc.wallet_id},
+	)
+	return {"success": True, "request_id": doc.request_id, "status": doc.status}
+
+
+@frappe.whitelist()
+@require_admin()
+@handle_api_errors
+def cancel_fygaro_topup(request_id, reason=None):
+	"""Record a Fygaro card top-up as Cancelled (it will not be credited).
+
+	Record-only: updates the audit row's status and failure reason. No money
+	moves, no IBEX, no external calls.
+	"""
+	doc = _load_fygaro_topup_for_status_action(request_id, "cancelled")
+
+	doc.status = "Cancelled"
+	if reason is not None and str(reason).strip() != "":
+		doc.failure_reason = reason
+	doc.save()
+
+	audit_log(
+		"cancel_fygaro_topup",
+		"Bridge Transfer Request",
+		doc.name,
+		{"request_id": doc.request_id, "reason": reason},
+	)
+	return {"success": True, "request_id": doc.request_id, "status": doc.status}
+
+
 def _get_cashout_for_action(cashout_id):
 	if not cashout_id:
 		frappe.response["http_status_code"] = 400

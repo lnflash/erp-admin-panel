@@ -54,6 +54,7 @@ const BridgeStatus = {
 	SETTLED: "Settled",
 	COMPLETED: "Completed",
 	FAILED: "Failed",
+	CANCELLED: "Cancelled",
 };
 
 const BRIDGE_STATUS_BADGE_MAP = {
@@ -62,6 +63,7 @@ const BRIDGE_STATUS_BADGE_MAP = {
 	[BridgeStatus.SETTLED]: "cashout-badge-paid",
 	[BridgeStatus.COMPLETED]: "cashout-badge-paid",
 	[BridgeStatus.FAILED]: "cashout-badge-failed",
+	[BridgeStatus.CANCELLED]: "cashout-badge-cancelled",
 };
 
 function getCashoutStatusBadgeClass(status) {
@@ -700,6 +702,12 @@ class TransferRequestsManager {
 		);
 		main.on("click", ".btn-complete-cashout", () =>
 			this.complete_cashout(this.selected_request)
+		);
+		main.on("click", ".btn-complete-fygaro", () =>
+			this.complete_fygaro_topup(this.selected_request)
+		);
+		main.on("click", ".btn-cancel-fygaro", () =>
+			this.cancel_fygaro_topup(this.selected_request)
 		);
 
 		this.$cache.filterStatus.on("change", () => {
@@ -1543,6 +1551,117 @@ class TransferRequestsManager {
 		this.complete_cashout(req);
 	}
 
+	complete_fygaro_topup(req) {
+		// Record-only: the operator has already credited the wallet by hand;
+		// this just stamps the audit row. Guard mirrors the backend so a stale
+		// drawer can never fire the action on the wrong kind of row.
+		if (!req || req.provider !== "Fygaro" || req.status !== "Fiat Received") return;
+
+		frappe.prompt(
+			[
+				{
+					fieldname: "final_amount",
+					fieldtype: "Currency",
+					label: "Amount credited to wallet",
+					default: req.amount,
+					reqd: 1,
+				},
+			],
+			(values) => {
+				frappe.call({
+					method: "admin_panel.api.admin_api.complete_fygaro_topup",
+					args: {
+						request_id: req.request_id,
+						final_amount: values.final_amount,
+						wallet_id: req.wallet_id,
+					},
+					freeze: true,
+					freeze_message: "Marking top-up completed...",
+					callback: (r) => {
+						const result = r.message || {};
+						if (result.success) {
+							frappe.show_alert(
+								{ message: "Card top-up marked completed.", indicator: "green" },
+								5
+							);
+							this.close_details();
+							this.load_requests();
+						} else {
+							frappe.msgprint({
+								title: "Error",
+								indicator: "red",
+								message: result.error || "Failed to mark top-up completed.",
+							});
+						}
+					},
+					error: (err) => {
+						const msg =
+							err?.responseJSON?.exception ||
+							err?.responseJSON?.message ||
+							"Failed to mark top-up completed";
+						frappe.msgprint({ title: "Error", indicator: "red", message: msg });
+					},
+				});
+			},
+			"Mark Card Top-Up Completed",
+			"Confirm"
+		);
+	}
+
+	cancel_fygaro_topup(req) {
+		// Record-only: marks a top-up that will not be credited as Cancelled.
+		if (!req || req.provider !== "Fygaro" || req.status !== "Fiat Received") return;
+
+		frappe.confirm("Cancel this card top-up? It will not be credited.", () => {
+			frappe.prompt(
+				[
+					{
+						fieldname: "reason",
+						fieldtype: "Small Text",
+						label: "Reason (optional)",
+					},
+				],
+				(values) => {
+					frappe.call({
+						method: "admin_panel.api.admin_api.cancel_fygaro_topup",
+						args: {
+							request_id: req.request_id,
+							reason: values.reason,
+						},
+						freeze: true,
+						freeze_message: "Cancelling top-up...",
+						callback: (r) => {
+							const result = r.message || {};
+							if (result.success) {
+								frappe.show_alert(
+									{ message: "Card top-up cancelled.", indicator: "orange" },
+									5
+								);
+								this.close_details();
+								this.load_requests();
+							} else {
+								frappe.msgprint({
+									title: "Error",
+									indicator: "red",
+									message: result.error || "Failed to cancel top-up.",
+								});
+							}
+						},
+						error: (err) => {
+							const msg =
+								err?.responseJSON?.exception ||
+								err?.responseJSON?.message ||
+								"Failed to cancel top-up";
+							frappe.msgprint({ title: "Error", indicator: "red", message: msg });
+						},
+					});
+				},
+				"Cancel Card Top-Up",
+				"Confirm Cancellation"
+			);
+		});
+	}
+
 	show_bridge_details(req) {
 		this.selected_request = req;
 		const panel = this.page.main.find(".request-details");
@@ -1555,7 +1674,27 @@ class TransferRequestsManager {
 					: '<i class="fa fa-exchange" style="margin-right: 10px;"></i> Bridge Transfer Details'
 			);
 
+		// Operator status actions are record-only and only apply to a Fygaro
+		// card top-up still awaiting credit. Never shown for Bridge rows or for
+		// already Completed / Cancelled / Failed / Settled top-ups.
+		const showFygaroActions = req.provider === "Fygaro" && req.status === "Fiat Received";
+		const fygaroActions = showFygaroActions
+			? `
+            <div class="d-flex gap-2 justify-content-end fygaro-topup-actions" style="gap: 12px; margin-bottom: 16px;">
+                <button class="modern-btn modern-btn-primary btn-complete-fygaro" style="background: var(--color-green); border-color: var(--color-green);">
+                    <i class="fa fa-check"></i>
+                    Mark Completed
+                </button>
+                <button class="modern-btn modern-btn-primary btn-cancel-fygaro" style="background: var(--color-error); border-color: var(--color-error);">
+                    <i class="fa fa-ban"></i>
+                    Cancel
+                </button>
+            </div>
+        `
+			: "";
+
 		panel.find(".card-body").html(`
+            ${fygaroActions}
             <div class="detail-section mb-4">
                 <h6 class="section-header">
                     <i class="fa fa-info-circle" style="margin-right: 8px; color: var(--color-primary);"></i>
