@@ -20,6 +20,33 @@ def read_text(path):
 	return path.read_text()
 
 
+def extract_js_function(js, name):
+	"""Return the source of a `name(...) { ... }` method by brace-matching.
+
+	Lets a test assert on the *body* of one method rather than greping the
+	whole file — so a gate check can't be satisfied by an unrelated match
+	elsewhere in the source.
+	"""
+	# Find the method *definition*, skipping `this.name(...)` call sites
+	# (which are preceded by a dot).
+	search = 0
+	while True:
+		start = js.index(f"{name}(", search)
+		if start == 0 or js[start - 1] != ".":
+			break
+		search = start + 1
+	brace = js.index("{", start)
+	depth = 0
+	for i in range(brace, len(js)):
+		if js[i] == "{":
+			depth += 1
+		elif js[i] == "}":
+			depth -= 1
+			if depth == 0:
+				return js[start : i + 1]
+	raise AssertionError(f"unbalanced braces extracting {name}")
+
+
 def fygaro_settings_doc():
 	return json.loads((FYGARO_SETTINGS_DIR / "fygaro_settings.json").read_text())
 
@@ -103,3 +130,50 @@ def test_transfer_requests_drawer_renders_fee_breakdown():
 		assert f'"{label}"' in js
 	assert "req.processor_fee" in js
 	assert "req.flash_fee" in js
+
+
+def test_fees_section_gates_on_provider_not_fee_presence():
+	"""The section must hide for Bridge rows.
+
+	The fee fields are Currency, so unset Bridge rows come back as 0.0 (not
+	NULL). Gating on fee *presence* would render "USD 0.00" fees on every
+	Bridge transfer; the gate has to key on the row being a Fygaro card
+	top-up. This asserts on the extracted method body so an unrelated
+	provider check elsewhere in the file can't satisfy it.
+	"""
+	body = extract_js_function(read_text(PAGE_DIR / "transfer_requests.js"), "renderFeesSection")
+
+	# Early-returns empty for anything that isn't a Fygaro card top-up.
+	assert 'req.provider !== "Fygaro"' in body
+	assert 'return ""' in body
+	# And does NOT gate on fee presence (the regressed behavior).
+	assert "hasValue" not in body
+
+
+def test_fygaro_settings_controller_validates_policy_invariants():
+	"""The financial-policy single must guard its own invariants on save.
+
+	No Frappe runtime here, so this asserts the controller *has* a validate()
+	that enforces the key guards: non-negative fees/margins, percent bounds,
+	a positive minimum, and an auto-credit limit at or above that minimum.
+	With auto-credit enabled these directly bound what gets credited without
+	review, so an empty `pass` controller is a defect.
+	"""
+	controller = read_text(FYGARO_SETTINGS_DIR / "fygaro_settings.py")
+
+	assert "def validate(self)" in controller
+	# Non-negative guard on every fee/margin field.
+	for fieldname in (
+		"processor_fee_percent",
+		"processor_fee_fixed",
+		"flash_margin_percent",
+		"flash_margin_fixed",
+	):
+		assert fieldname in controller, f"validate must reference {fieldname}"
+	assert "< 0" in controller
+	# Percent fields are bounded above at 100.
+	assert "> 100" in controller
+	# Positive minimum and limit-at-or-above-minimum ordering.
+	assert "minimum_topup" in controller
+	assert "auto_credit_limit" in controller
+	assert "frappe.throw" in controller

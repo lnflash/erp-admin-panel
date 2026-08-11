@@ -1781,10 +1781,13 @@ class TransferRequestsManager {
 	}
 
 	// Fee breakdown for card top-ups. Bridge rows carry no processor/flash fee,
-	// so the section is omitted unless at least one fee value is present.
+	// so the section is omitted for any non-Fygaro provider.
 	renderFeesSection(req) {
-		const hasValue = (v) => v !== null && v !== undefined && v !== "";
-		if (!hasValue(req.processor_fee) && !hasValue(req.flash_fee)) {
+		// Gate on the row being a card top-up, not on fee presence. The fee
+		// fields are Currency, so Frappe writes unset Bridge rows as 0.0 (not
+		// NULL) — presence-gating would render "USD 0.00" fees on every Bridge
+		// transfer. Only Fygaro (card) top-ups carry a real fee breakdown.
+		if (req.provider !== "Fygaro") {
 			return "";
 		}
 		return `
