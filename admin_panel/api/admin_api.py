@@ -483,7 +483,16 @@ def get_id_document_url(file_key):
 		frappe.response["http_status_code"] = 400
 		return {"success": False, "errors": error_messages}
 
-	return {"success": True, "url": result.get("readUrl")}
+	url = result.get("readUrl")
+	if not url:
+		# A null idDocumentReadUrl payload (or one missing readUrl) is an
+		# upstream failure — surface it loudly instead of "succeeding" with
+		# no URL for the document viewer to open.
+		frappe.logger().error(f"ID document URL response missing readUrl for file key: {file_key}")
+		frappe.response["http_status_code"] = 502
+		return {"success": False, "error": "No read URL returned"}
+
+	return {"success": True, "url": url}
 
 
 @frappe.whitelist()

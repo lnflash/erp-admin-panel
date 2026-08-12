@@ -1,9 +1,11 @@
 import time
-from typing import Any
+from typing import TypeVar
 
 import frappe
 import jwt
 import requests
+
+T = TypeVar("T")
 
 
 class GraphQLError(Exception):
@@ -85,7 +87,7 @@ class GraphQLClient:
 
 	def execute_query(self, query: str, variables: dict | None = None) -> dict:
 		"""Execute a GraphQL query and return the response"""
-		payload = {"query": query}
+		payload: dict = {"query": query}
 		if variables:
 			payload["variables"] = variables
 
@@ -94,9 +96,21 @@ class GraphQLClient:
 		return response.json()
 
 	def execute_and_extract(
-		self, query: str, variables: dict, data_key: str, allow_not_found: bool = False
-	) -> Any:
+		self,
+		query: str,
+		variables: dict,
+		data_key: str,
+		allow_not_found: bool = False,
+		*,
+		result_type: type[T],
+	) -> T | None:
 		"""Execute query, check errors, and extract data by key.
+
+		result_type parameterizes the return type: callers declare the shape
+		they expect back (e.g. ``result_type=dict``) and get ``T | None``
+		instead of ``Any``. The extracted payload is isinstance-checked
+		against it, so an API shape drift raises GraphQLError instead of
+		leaking a mistyped value into the caller.
 
 		allow_not_found selects LOOKUP semantics, which also tolerate PARTIAL
 		responses: when the requested node resolved, field-level resolver
@@ -118,11 +132,24 @@ class GraphQLClient:
 						f"GraphQL partial response for {data_key} (using data, "
 						f"failed fields are null): {errors}"
 					)
-				return data
+				return self._checked_result(data, data_key, result_type)
 			self._check_errors(resp, allow_not_found=True)
 			return None
 		self._check_errors(resp)
-		return resp.get("data", {}).get(data_key)
+		data = (resp.get("data") or {}).get(data_key)
+		if data is None:
+			return None
+		return self._checked_result(data, data_key, result_type)
+
+	@staticmethod
+	def _checked_result(data: object, data_key: str, result_type: type[T]) -> T:
+		"""Runtime guard backing the parameterized return type"""
+		if not isinstance(data, result_type):
+			raise GraphQLError(
+				f"GraphQL data for {data_key!r} has type {type(data).__name__}, "
+				f"expected {result_type.__name__}"
+			)
+		return data
 
 	# GraphQL query constants
 	# Reusable fragment for account detail fields
@@ -343,7 +370,11 @@ class GraphQLClient:
 	def get_account_by_phone(self, phone: str) -> dict | None:
 		"""Get account details by phone number"""
 		return self.execute_and_extract(
-			self.ACCOUNT_BY_PHONE_QUERY, {"phone": phone}, "accountDetailsByUserPhone", allow_not_found=True
+			self.ACCOUNT_BY_PHONE_QUERY,
+			{"phone": phone},
+			"accountDetailsByUserPhone",
+			allow_not_found=True,
+			result_type=dict,
 		)
 
 	def update_account_level(self, uid: str, level: str, erp_party: str | None = None) -> dict:
@@ -351,26 +382,41 @@ class GraphQLClient:
 		variables = {"input": {"uid": uid, "level": level}}
 		if erp_party:
 			variables["input"]["erpParty"] = erp_party
-		return self.execute_and_extract(self.UPDATE_LEVEL_MUTATION, variables, "accountUpdateLevel") or {}
+		return (
+			self.execute_and_extract(
+				self.UPDATE_LEVEL_MUTATION, variables, "accountUpdateLevel", result_type=dict
+			)
+			or {}
+		)
 
 	def get_id_document_read_url(self, file_key: str) -> dict:
 		"""Get pre-signed URL for ID document from Digital Ocean Spaces"""
-		return self.execute_and_extract(
-			self.ID_DOCUMENT_URL_QUERY, {"fileKey": file_key}, "idDocumentReadUrl"
+		return (
+			self.execute_and_extract(
+				self.ID_DOCUMENT_URL_QUERY, {"fileKey": file_key}, "idDocumentReadUrl", result_type=dict
+			)
+			or {}
 		)
 
 	def get_notification_topics(self) -> list:
 		"""Fetch available notification topics from Flash API"""
-		resp = self.execute_query(self.NOTIFICATION_TOPICS_QUERY)
-		self._check_errors(resp)
-		return resp.get("data", {}).get("notificationTopics", [])
+		return (
+			self.execute_and_extract(
+				self.NOTIFICATION_TOPICS_QUERY, {}, "notificationTopics", result_type=list
+			)
+			or []
+		)
 
 	def send_alert(self, topic: str, title: str, body: str) -> dict:
 		"""Send alert to Flash app users via topic"""
-		return self.execute_and_extract(
-			self.SEND_NOTIFICATION_MUTATION,
-			{"input": {"topic": topic, "title": title, "body": body}},
-			"sendNotification",
+		return (
+			self.execute_and_extract(
+				self.SEND_NOTIFICATION_MUTATION,
+				{"input": {"topic": topic, "title": title, "body": body}},
+				"sendNotification",
+				result_type=dict,
+			)
+			or {}
 		)
 
 	def send_cashout_notification(self, account_id: str, amount: int, currency: str) -> dict:
@@ -380,6 +426,7 @@ class GraphQLClient:
 				self.CASHOUT_NOTIFICATION_SEND_MUTATION,
 				{"input": {"accountId": account_id, "amount": int(amount), "currency": currency}},
 				"cashoutNotificationSend",
+				result_type=dict,
 			)
 			or {}
 		)
@@ -391,12 +438,17 @@ class GraphQLClient:
 			{"username": username},
 			"accountDetailsByUsername",
 			allow_not_found=True,
+			result_type=dict,
 		)
 
 	def get_account_by_email(self, email: str) -> dict | None:
 		"""Get account details by email address"""
 		return self.execute_and_extract(
-			self.ACCOUNT_BY_EMAIL_QUERY, {"email": email}, "accountDetailsByEmail", allow_not_found=True
+			self.ACCOUNT_BY_EMAIL_QUERY,
+			{"email": email},
+			"accountDetailsByEmail",
+			allow_not_found=True,
+			result_type=dict,
 		)
 
 	def get_account_by_id(self, account_id: str) -> dict | None:
@@ -406,6 +458,7 @@ class GraphQLClient:
 			{"accountId": account_id},
 			"accountDetailsByAccountId",
 			allow_not_found=True,
+			result_type=dict,
 		)
 
 	def update_account_status(self, uid: str, status: str, comment: str | None = None) -> dict:
@@ -413,7 +466,12 @@ class GraphQLClient:
 		variables = {"input": {"uid": uid, "status": status}}
 		if comment:
 			variables["input"]["comment"] = comment
-		return self.execute_and_extract(self.UPDATE_STATUS_MUTATION, variables, "accountUpdateStatus") or {}
+		return (
+			self.execute_and_extract(
+				self.UPDATE_STATUS_MUTATION, variables, "accountUpdateStatus", result_type=dict
+			)
+			or {}
+		)
 
 	def update_user_phone(self, account_uuid: str, phone: str) -> dict:
 		"""Update phone number for a user"""
@@ -422,6 +480,7 @@ class GraphQLClient:
 				self.USER_UPDATE_PHONE_MUTATION,
 				{"input": {"accountUuid": account_uuid, "phone": phone}},
 				"userUpdatePhone",
+				result_type=dict,
 			)
 			or {}
 		)
@@ -430,7 +489,10 @@ class GraphQLClient:
 		"""Approve a merchant map entry"""
 		return (
 			self.execute_and_extract(
-				self.MERCHANT_MAP_VALIDATE_MUTATION, {"input": {"id": merchant_id}}, "merchantMapValidate"
+				self.MERCHANT_MAP_VALIDATE_MUTATION,
+				{"input": {"id": merchant_id}},
+				"merchantMapValidate",
+				result_type=dict,
 			)
 			or {}
 		)
@@ -439,7 +501,10 @@ class GraphQLClient:
 		"""Delete a merchant map entry"""
 		return (
 			self.execute_and_extract(
-				self.MERCHANT_MAP_DELETE_MUTATION, {"input": {"id": merchant_id}}, "merchantMapDelete"
+				self.MERCHANT_MAP_DELETE_MUTATION,
+				{"input": {"id": merchant_id}},
+				"merchantMapDelete",
+				result_type=dict,
 			)
 			or {}
 		)
