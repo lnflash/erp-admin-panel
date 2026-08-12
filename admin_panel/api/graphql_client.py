@@ -136,7 +136,7 @@ class GraphQLClient:
 			self._check_errors(resp, allow_not_found=True)
 			return None
 		self._check_errors(resp)
-		data = resp.get("data", {}).get(data_key)
+		data = (resp.get("data") or {}).get(data_key)
 		if data is None:
 			return None
 		return self._checked_result(data, data_key, result_type)
@@ -400,9 +400,12 @@ class GraphQLClient:
 
 	def get_notification_topics(self) -> list:
 		"""Fetch available notification topics from Flash API"""
-		resp = self.execute_query(self.NOTIFICATION_TOPICS_QUERY)
-		self._check_errors(resp)
-		return resp.get("data", {}).get("notificationTopics", [])
+		return (
+			self.execute_and_extract(
+				self.NOTIFICATION_TOPICS_QUERY, {}, "notificationTopics", result_type=list
+			)
+			or []
+		)
 
 	def send_alert(self, topic: str, title: str, body: str) -> dict:
 		"""Send alert to Flash app users via topic"""

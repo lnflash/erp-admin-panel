@@ -62,6 +62,13 @@ def test_strict_missing_key_returns_none():
 	assert client.execute_and_extract("q", {}, "accountUpdateLevel", result_type=dict) is None
 
 
+def test_strict_null_data_returns_none():
+	# {"data": null} with no errors array must return None like the lookup
+	# path does, not blow up with AttributeError on None.get.
+	client = make_client({"data": None})
+	assert client.execute_and_extract("q", {}, "accountUpdateLevel", result_type=dict) is None
+
+
 def test_strict_graphql_error_raises():
 	client = make_client({"errors": [{"code": "FORBIDDEN", "message": "nope"}]})
 	with pytest.raises(GraphQLError):
@@ -157,6 +164,30 @@ def test_lookup_partial_response_returns_data_and_logs(monkeypatch):
 def test_get_account_by_id_returns_account_dict():
 	client = make_client({"data": {"accountDetailsByAccountId": ACCOUNT}})
 	assert client.get_account_by_id("acc-1") == ACCOUNT
+
+
+def test_get_notification_topics_returns_topics_list():
+	client = make_client({"data": {"notificationTopics": ["Circles", "Payments"]}})
+	assert client.get_notification_topics() == ["Circles", "Payments"]
+
+
+def test_get_notification_topics_null_data_returns_empty_list():
+	client = make_client({"data": {"notificationTopics": None}})
+	assert client.get_notification_topics() == []
+
+
+def test_get_notification_topics_shape_drift_raises():
+	# The typed-extraction guard now covers this last helper too: a dict
+	# where a list is expected must raise, not leak into the caller.
+	client = make_client({"data": {"notificationTopics": {"oops": True}}})
+	with pytest.raises(GraphQLError):
+		client.get_notification_topics()
+
+
+def test_get_notification_topics_error_raises():
+	client = make_client({"errors": [{"code": "FORBIDDEN", "message": "nope"}]})
+	with pytest.raises(GraphQLError):
+		client.get_notification_topics()
 
 
 def test_update_account_status_null_data_returns_empty_dict():
