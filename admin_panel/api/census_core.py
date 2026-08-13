@@ -11,7 +11,7 @@ depend on the constants and `build_census` defined here.
 CURRENCY_BY_ID = {3: "Usd", 29: "Usdt"}
 
 # Account roles that are Flash-internal system accounts, not real customers.
-SYSTEM_ROLES = {"dealer", "bankowner", "funder"}
+SYSTEM_ROLES = {"dealer", "bankowner", "funder", "rewards"}
 
 # Account status (last statusHistory entry) considered "active", case-insensitive.
 ACTIVE_STATUS = "active"

@@ -1,4 +1,4 @@
-"""System accounts treasury: bankowner / funder / dealer live balances,
+"""System accounts treasury: bankowner / funder / dealer / rewards live balances,
 activity, cashout-payables coverage, and gated fund movement.
 
 Money-flow facts this module leans on (verified in the flash codebase):
@@ -23,7 +23,7 @@ from .common import handle_api_errors
 from .ibex_client import IbexClient
 from .mongo_reader import load_accounts, load_wallets
 
-SYSTEM_ROLES = ("bankowner", "funder", "dealer")
+SYSTEM_ROLES = ("bankowner", "funder", "dealer", "rewards")
 
 # Cashouts whose fiat leg has not been paid out yet.
 OUTSTANDING_CASHOUT_STATUSES = ("Pending", "Draft", "In Progress")
@@ -117,7 +117,7 @@ def _watchlist_map():
 def _resolve_system_accounts():
 	"""All role accounts + the watchlist, with their wallets.
 
-	Role accounts (bankowner/funder/dealer) are always transfer-eligible.
+	Role accounts (bankowner/funder/dealer/rewards) are always transfer-eligible.
 	Watchlist accounts are VIEW-ONLY unless their doctype row has
 	allow_transfers set — a deliberate per-account opt-in.
 	"""
@@ -163,8 +163,8 @@ def _resolve_system_accounts():
 				"wallets": sorted(by_account.get(account_id, []), key=lambda w: w["wallet_id"]),
 			}
 		)
-	# bankowner first, then funder, dealer, watchlist
-	order = {"bankowner": 0, "funder": 1, "dealer": 2, "watchlist": 3}
+	# bankowner first, then funder, dealer, rewards, watchlist
+	order = {"bankowner": 0, "funder": 1, "dealer": 2, "rewards": 3, "watchlist": 4}
 	resolved.sort(key=lambda a: (order.get(a["role"], 9), a["username"] or ""))
 	return resolved
 
@@ -274,7 +274,7 @@ def get_system_account_activity(wallet_id, page=0, limit=20):
 @handle_api_errors
 def create_funding_invoice(wallet_id, amount_usd, memo=None):
 	"""Generate a Lightning receive invoice so an EXTERNAL payer can fund a
-	system wallet (bankowner/funder/dealer) from the page.
+	system wallet (bankowner/funder/dealer/rewards) from the page.
 
 	No treasury money moves here — an invoice is created ON the wallet's IBEX
 	account; the payer's Lightning payment credits it directly at IBEX. This is
@@ -360,7 +360,7 @@ def get_system_wallet_balance(wallet_id):
 @require_roles(["System Manager"])
 @handle_api_errors
 def transfer_between_system_wallets(from_wallet_id, to_wallet_id, amount_usd, memo=None):
-	"""Move funds between two ROLE wallets (bankowner/funder/dealer only —
+	"""Move funds between two ROLE wallets (bankowner/funder/dealer/rewards only —
 	watchlist accounts are view-only). add_invoice on the receiver,
 	pay_invoice from the sender; every attempt is a System Transfer Log doc.
 

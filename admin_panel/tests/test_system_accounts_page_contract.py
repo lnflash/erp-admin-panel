@@ -15,6 +15,7 @@ API_PY = (ADMIN_PANEL / "api" / "system_accounts.py").read_text()
 IBEX_PY = (ADMIN_PANEL / "api" / "ibex_client.py").read_text()
 PAGE_JS = (ADMIN_PANEL / "admin_panel" / "page" / "system_accounts" / "system_accounts.js").read_text()
 SETUP_PY = (ADMIN_PANEL / "admin_panel" / "setup.py").read_text()
+CENSUS_PY = (ADMIN_PANEL / "api" / "census_core.py").read_text()
 
 
 def test_read_endpoints_carry_the_financial_gate():
@@ -136,6 +137,16 @@ def test_funding_ui_is_wired_and_usd_usdt_only():
 	assert "sa-fund-btn" in PAGE_JS
 	# Fund is only offered on USD/USDT rows — BTC uses a different rail
 	assert 'w.currency === "USD" || w.currency === "USDT"' in PAGE_JS
+
+
+def test_rewards_is_a_first_class_system_role():
+	# a real role=rewards treasury account must be enumerated like bankowner/
+	# funder/dealer — in the system-role set + ordering, the page's role labels,
+	# and the census system-vs-customer classification (never counted a customer).
+	assert '"rewards"' in API_PY
+	assert '"rewards": 3' in API_PY  # ordered after dealer, before watchlist
+	assert 'rewards: "Rewards"' in PAGE_JS
+	assert '"rewards"' in CENSUS_PY
 
 
 def test_ibex_client_write_surface_is_exactly_the_two_invoice_calls():

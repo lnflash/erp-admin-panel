@@ -14,6 +14,7 @@ const SA_ROLE_LABELS = {
 	bankowner: "BankOwner",
 	funder: "Funder",
 	dealer: "Dealer",
+	rewards: "Rewards",
 	watchlist: "Watchlist",
 };
 
@@ -99,6 +100,8 @@ const SA_CSS = `
     .system-accounts .sa-chip.role-funder { background: var(--sa-accent-soft); color: var(--sa-accent-ink); }
     .system-accounts .sa-chip.role-dealer { background: var(--sa-accent-soft); color: var(--sa-accent-ink);
         opacity: 0.85; }
+    .system-accounts .sa-chip.role-rewards { background: var(--sa-accent-soft); color: var(--sa-accent-ink);
+        opacity: 0.7; }
     .system-accounts .sa-chip.st-ok { background: var(--sa-accent-soft); color: var(--sa-accent-ink); }
     .system-accounts .sa-chip.st-bad { background: var(--sa-serious-bg); color: var(--sa-serious); }
     .system-accounts .sa-chip.cur { background: var(--sa-line-soft); color: var(--sa-ink2); }
