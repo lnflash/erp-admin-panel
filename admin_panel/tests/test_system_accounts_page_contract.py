@@ -16,6 +16,7 @@ IBEX_PY = (ADMIN_PANEL / "api" / "ibex_client.py").read_text()
 PAGE_JS = (ADMIN_PANEL / "admin_panel" / "page" / "system_accounts" / "system_accounts.js").read_text()
 SETUP_PY = (ADMIN_PANEL / "admin_panel" / "setup.py").read_text()
 CENSUS_PY = (ADMIN_PANEL / "api" / "census_core.py").read_text()
+IBEX_STATUS_PY = (ADMIN_PANEL / "api" / "ibex_status.py").read_text()
 
 
 def test_read_endpoints_carry_the_financial_gate():
@@ -129,6 +130,48 @@ def test_wallet_balance_read_is_financial_gated_and_membership_checked():
 	stack = "@frappe.whitelist()\n@require_financial()\n@handle_api_errors\ndef get_system_wallet_balance("
 	assert stack in API_PY
 	assert '"Not a system-account wallet"' in API_PY
+
+
+def test_funding_receipt_is_invoice_settlement_not_balance_delta():
+	# The receipt signal must confirm THIS invoice settled at IBEX (by payment
+	# hash), never infer it from a wallet-balance rise — the bankowner float grows
+	# with every cashout, so a delta cannot distinguish the funding payment from
+	# routine inflow.
+	stack = "@frappe.whitelist()\n@require_financial()\n@handle_api_errors\ndef get_funding_invoice_status("
+	assert stack in API_PY, "get_funding_invoice_status must be whitelisted + financial-gated"
+	# it reads the specific invoice by hash and interprets settlement fail-safe
+	assert "get_invoice_from_hash(" in API_PY
+	assert "invoice_settled(invoice)" in API_PY
+	assert "def get_invoice_from_hash(" in IBEX_PY
+	assert "/invoice/from-hash/" in IBEX_PY
+	# create_funding_invoice returns the payment hash the poll keys on
+	assert '"hash": invoice_hash' in API_PY
+
+	# The page polls settlement, not balance — and the old balance-delta receipt
+	# heuristic is gone (baseline capture + `bal - baseline >= amount`).
+	assert "admin_panel.api.system_accounts.get_funding_invoice_status" in PAGE_JS
+	assert "settled !== true" in PAGE_JS
+	assert "inv.hash" in PAGE_JS
+	assert "d._baseline" not in PAGE_JS, "balance-delta receipt heuristic must be removed"
+	assert "bal - (d._baseline" not in PAGE_JS
+
+	# The poll is bounded so an abandoned Fund dialog can't hammer the backend.
+	assert "SA_FUND_POLL_MAX_MS" in PAGE_JS
+	assert "_pollDeadline" in PAGE_JS
+
+
+def test_funding_invoice_generation_is_audited():
+	# Generating an LN invoice on a treasury account is privileged — it must land
+	# in the audit trail, like transfer_between_system_wallets, not just app logs.
+	assert 'audit_log(\n\t\t"funding_invoice"' in API_PY or '"funding_invoice"' in API_PY
+
+
+def test_ibex_status_is_io_free():
+	# invoice_settled is the money-critical receipt decision; it must stay pure
+	# (no frappe/requests/pymongo) so it can be unit-tested against fixtures.
+	for banned in ("import frappe", "import requests", "import pymongo"):
+		assert banned not in IBEX_STATUS_PY, f"ibex_status must stay IO-free: found {banned}"
+	assert "def invoice_settled(" in IBEX_STATUS_PY
 
 
 def test_funding_ui_is_wired_and_usd_usdt_only():

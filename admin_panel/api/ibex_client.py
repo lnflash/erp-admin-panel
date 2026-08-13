@@ -159,8 +159,21 @@ class IbexClient:
 		"""POST with the same raw-token auth + 401/429 handling as _get.
 
 		Only the two treasury calls below use this — the client is otherwise
-		read-only by design. Never add a write here without a matching
-		System-Manager-gated endpoint and a System Transfer Log record.
+		read-only by design.
+
+		Write policy — two deliberately different tiers:
+		  * VALUE-MOVING writes (pay_invoice, and add_invoice used as the
+		    receiver leg of a wallet-to-wallet transfer) move treasury funds and
+		    require a System-Manager-gated endpoint plus a System Transfer Log
+		    record (see transfer_between_system_wallets).
+		  * INBOUND-ONLY receive-invoice creation (add_invoice called on its own
+		    so an external payer can fund a wallet — create_funding_invoice) moves
+		    NO treasury money on creation; the payer's later payment only credits
+		    us. It is therefore financial-gated (System Manager OR Accounts
+		    Manager), bounded by a fat-finger cap, and audit_log'd rather than
+		    Transfer-Log'd. Do NOT widen this carve-out to any write that debits a
+		    system wallet.
+		Never add a NEW write here without matching one of these two tiers.
 		"""
 		url = f"{self.hub_url}{path}"
 		headers = {"Authorization": self._get_token()}
@@ -198,6 +211,26 @@ class IbexClient:
 		cutover code uses for treasury moves.
 		"""
 		resp = self._post("/v2/invoice/pay", {"accountId": account_id, "bolt11": bolt11})
+		return resp.json()
+
+	def get_invoice_from_hash(self, invoice_hash: str) -> dict:
+		"""Look up ONE invoice by its payment hash: GET /invoice/from-hash/{hash}.
+
+		Read-only. Used by the funding receipt poll to confirm THIS specific
+		invoice settled at IBEX — never a wallet-balance delta, which on an
+		actively-transacting treasury wallet (bankowner's float grows with every
+		cashout) would misread routine inflow as the funding payment.
+
+		A 404 means the hub does not (yet) know the hash — returned as
+		{not_found: True} so the poll keeps waiting instead of erroring. Note the
+		path has no /v2 prefix (the hub serves from-hash under /invoice/...),
+		matching the ibex-client library and the flash backend's settle verifier.
+		The settled state lives at response state.id == 1 (SETTLED); see
+		ibex_status.invoice_settled.
+		"""
+		resp = self._get(f"/invoice/from-hash/{invoice_hash}", {}, allow_not_found=True)
+		if resp.status_code == 404:
+			return {"hash": invoice_hash, "not_found": True}
 		return resp.json()
 
 	def get_account_details(self, account_id: str) -> dict:

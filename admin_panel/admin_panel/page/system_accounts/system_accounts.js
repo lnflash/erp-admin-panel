@@ -18,6 +18,14 @@ const SA_ROLE_LABELS = {
 	watchlist: "Watchlist",
 };
 
+// How often the funding receipt poll checks THIS invoice's settlement at IBEX.
+const SA_FUND_POLL_INTERVAL_MS = 6000;
+// The receipt poll stops this long after the Fund dialog opens, so an operator
+// who generates an invoice and walks away can't leave it hammering the backend
+// forever. Roughly matches the ~15 auto-regenerations (15 × 60s). The manual
+// Regenerate / Refresh controls still work after it stops.
+const SA_FUND_POLL_MAX_MS = 15 * 60 * 1000;
+
 function saEsc(v) {
 	return frappe.utils.escape_html(String(v == null ? "" : v));
 }
@@ -620,11 +628,13 @@ class SystemAccounts {
 				this.generate_funding_invoice(d, w, amount);
 			},
 		});
-		// Baseline is the page-load balance — captured BEFORE any payment, so a
-		// full-amount rise is unambiguous receipt. Timers cleared on close.
-		d._baseline = Number(w.balance || 0);
+		// Receipt is confirmed by polling THIS invoice's settlement at IBEX (by
+		// payment hash), never by a wallet-balance delta — the treasury wallets
+		// transact constantly, so a balance rise is not proof of this payment.
+		// The poll is bounded (SA_FUND_POLL_MAX_MS) and all timers clear on close.
 		d._timers = [];
 		d._regens = 0;
+		d._pollDeadline = Date.now() + SA_FUND_POLL_MAX_MS;
 		d.onhide = () => (d._timers || []).forEach((t) => clearInterval(t));
 		d.show();
 	}
@@ -711,27 +721,57 @@ class SystemAccounts {
 		}, 1000);
 		d._timers.push(tick);
 
-		// Receipt poll: a fixed-amount LN invoice settles in full, so the wallet
-		// balance rises by `amount`. Require the full rise to avoid false hits.
+		// Receipt: confirm THIS invoice settled at IBEX, looked up by its payment
+		// hash — never a wallet-balance delta. The bankowner float grows with
+		// every cashout, so a balance rise cannot be sold as receipt of this
+		// funding payment. If the backend didn't return a hash we can't confirm
+		// automatically, so show a neutral note instead of a false ✓.
+		const invoiceHash = inv.hash;
+		const statusEl = out.find(".sa-fund-status");
+		if (!invoiceHash) {
+			statusEl.html(
+				"Waiting for payment… (auto-confirmation unavailable — use Refresh to check the balance)"
+			);
+			return;
+		}
 		const poll = setInterval(() => {
+			// Bound the poll so an abandoned dialog can't hit the backend forever.
+			if (Date.now() > (d._pollDeadline || 0)) {
+				(d._timers || []).forEach((t) => clearInterval(t));
+				d._timers = [];
+				statusEl.html(
+					"Stopped checking — click Regenerate or Refresh if you're still funding."
+				);
+				return;
+			}
 			frappe.call({
-				method: "admin_panel.api.system_accounts.get_system_wallet_balance",
-				args: { wallet_id: w.wallet_id },
+				method: "admin_panel.api.system_accounts.get_funding_invoice_status",
+				args: { invoice_hash: invoiceHash },
 				callback: (res) => {
-					const bal = Number(res.message?.balance);
-					if (!isFinite(bal)) return;
-					if (bal - (d._baseline || 0) >= amount - 0.01) {
-						(d._timers || []).forEach((t) => clearInterval(t));
-						d._timers = [];
-						out.find(".sa-fund-status")
-							.css("color", "var(--green,#0ca30c)")
-							.html(`✓ Received — balance is now $${fmt(bal)}`);
-						frappe.show_alert({ message: "Funding received.", indicator: "green" }, 6);
-						this.load();
-					}
+					// settled is True ONLY on an affirmative IBEX SETTLED state;
+					// open/ambiguous keeps us waiting (never claim receipt on a guess).
+					if (!res.message || res.message.settled !== true) return;
+					(d._timers || []).forEach((t) => clearInterval(t));
+					d._timers = [];
+					statusEl
+						.css("color", "var(--green,#0ca30c)")
+						.html("✓ Received — payment settled");
+					// One-shot fresh balance for the confirmation line (NOT polled).
+					frappe.call({
+						method: "admin_panel.api.system_accounts.get_system_wallet_balance",
+						args: { wallet_id: w.wallet_id },
+						callback: (b) => {
+							const bal = Number(b.message?.balance);
+							if (isFinite(bal)) {
+								statusEl.html(`✓ Received — balance is now $${fmt(bal)}`);
+							}
+						},
+					});
+					frappe.show_alert({ message: "Funding received.", indicator: "green" }, 6);
+					this.load();
 				},
 			});
-		}, 6000);
+		}, SA_FUND_POLL_INTERVAL_MS);
 		d._timers.push(poll);
 	}
 }

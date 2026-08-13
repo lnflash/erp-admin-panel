@@ -217,6 +217,39 @@ def test_sweep_pages_empty_first_page():
 	assert list(sweep_pages(lambda p: [], max_pages=5)) == []
 
 
+def test_rewards_role_is_system_not_customer():
+	"""A role='rewards' account is a Flash-internal system account, not a real
+	customer: it must land in the 'system' bucket, be flagged is_system, and
+	never be counted in a customer bucket (active_funded / active_zero /
+	closed_with_dust). Regression for making `rewards` a first-class system role
+	alongside bankowner/funder/dealer — previously only grep-verified."""
+	ibex = [{"id": "w-rw", "name": "acc-rw", "currencyId": 3, "balance": 500.0}]
+	wallets = {"w-rw": {"account_id": "acc-rw", "currency": "Usd", "type": "Checking"}}
+	accounts = {
+		"acc-rw": {
+			"username": "rewards",
+			"role": "rewards",
+			"status": "active",
+			"default_wallet_id": "w-rw",
+			"level": 2,
+		}
+	}
+
+	result = build_census(ibex, wallets, accounts, {})
+	row = result["rows"][0]
+
+	assert row["role"] == "rewards"
+	assert row["is_system"] is True
+	assert row["buckets"] == ["system"]
+
+	counts = result["bucket_counts"]
+	assert counts["system"] == 1
+	# a funded system account must never be miscounted as a customer
+	assert counts["active_funded"] == 0
+	assert counts["active_zero"] == 0
+	assert counts["closed_with_dust"] == 0
+
+
 def test_micro_dust_is_not_funded():
 	"""IBEX emits sub-nanodollar dust (~1e-10 seen on prod): it must classify
 	as zero — 91 rows showed 'active_funded' at $0.00 on the first full census."""

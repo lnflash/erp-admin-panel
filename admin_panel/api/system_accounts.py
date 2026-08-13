@@ -21,6 +21,7 @@ import requests
 from .auth import audit_log, require_financial, require_roles
 from .common import handle_api_errors
 from .ibex_client import IbexClient
+from .ibex_status import invoice_settled
 from .mongo_reader import load_accounts, load_wallets
 
 SYSTEM_ROLES = ("bankowner", "funder", "dealer", "rewards")
@@ -325,12 +326,25 @@ def create_funding_invoice(wallet_id, amount_usd, memo=None):
 	currency = (
 		CURRENCY_BY_ID.get(invoice.get("currencyId")) or wallet.get("mongo_currency") or "USD"
 	).upper()
+	# The payment hash identifies THIS invoice; the receipt poll confirms its
+	# settlement by hash (get_funding_invoice_status), never by a balance delta.
+	invoice_hash = frappe.utils.cstr(inv.get("hash") or "")
 	frappe.logger().info(f"funding_invoice wallet={wallet_id} amount={amount} by={frappe.session.user}")
+	# Generating an LN invoice on a treasury account is a privileged action —
+	# give it the same traceability trail as transfer_between_system_wallets
+	# (audit_log, not just an app-log line).
+	audit_log(
+		"funding_invoice",
+		"System Wallet",
+		wallet_id,
+		{"amount_usd": round(amount, 2), "currency": currency, "hash": invoice_hash},
+	)
 	return {
 		"wallet_id": wallet_id,
 		"amount_usd": round(amount, 2),
 		"currency": currency,
 		"bolt11": bolt11,
+		"hash": invoice_hash,
 		"expiry_utc": inv.get("expiryDateUtc"),
 	}
 
@@ -338,10 +352,43 @@ def create_funding_invoice(wallet_id, amount_usd, memo=None):
 @frappe.whitelist()
 @require_financial()
 @handle_api_errors
+def get_funding_invoice_status(invoice_hash):
+	"""Settlement status of ONE funding invoice, by its payment hash, read from
+	IBEX (GET /invoice/from-hash) — the funding modal's authoritative receipt
+	signal.
+
+	This confirms the SPECIFIC invoice settled, never a wallet-balance rise: the
+	busiest treasury wallet (bankowner) grows with every cashout, so a balance
+	delta cannot tell this funding payment apart from routine inflow (that false
+	signal is exactly what this endpoint replaces). Membership was already
+	enforced when the invoice was issued (create_funding_invoice re-derives it
+	server-side before generating), so this read is deliberately cheap — one IBEX
+	call, no mongo/account scan — and safe to poll. `settled` is True only on an
+	affirmative IBEX SETTLED state; OPEN / ambiguous / unknown-hash all return
+	False so the UI keeps waiting and never claims receipt on a guess.
+	"""
+	invoice_hash = frappe.utils.cstr(invoice_hash)
+	if not invoice_hash:
+		frappe.throw("Invoice hash is required")
+	invoice = IbexClient().get_invoice_from_hash(invoice_hash)
+	state = invoice.get("state")
+	return {
+		"hash": invoice_hash,
+		"settled": invoice_settled(invoice) is True,
+		"state": state.get("name") if isinstance(state, dict) else None,
+	}
+
+
+@frappe.whitelist()
+@require_financial()
+@handle_api_errors
 def get_system_wallet_balance(wallet_id):
-	"""Live balance for ONE system wallet — a cheap single-wallet read for the
-	funding modal's receipt poll (get_system_accounts fetches every wallet, too
-	heavy to poll). Membership re-derived server-side."""
+	"""Live balance for ONE system wallet. Membership is re-derived server-side
+	via _resolve_system_accounts() (a full accounts+wallets scan), so this is NOT
+	a cheap call and must not be polled in a tight loop. The funding modal calls
+	it ONCE, after get_funding_invoice_status confirms settlement, to show the
+	updated balance in the confirmation line; per-tick receipt polling uses the
+	cheap invoice-status read instead."""
 	wallet_id = frappe.utils.cstr(wallet_id)
 	known = {w["wallet_id"] for acc in _resolve_system_accounts() for w in acc["wallets"]}
 	if wallet_id not in known:
