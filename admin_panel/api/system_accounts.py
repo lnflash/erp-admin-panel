@@ -331,13 +331,35 @@ def create_funding_invoice(wallet_id, amount_usd, memo=None):
 	invoice_hash = frappe.utils.cstr(inv.get("hash") or "")
 	frappe.logger().info(f"funding_invoice wallet={wallet_id} amount={amount} by={frappe.session.user}")
 	# Generating an LN invoice on a treasury account is a privileged action —
-	# give it the same traceability trail as transfer_between_system_wallets
-	# (audit_log, not just an app-log line).
+	# give it the same traceability trail as transfer_between_system_wallets: a
+	# row in the append-only System Funding Log, one per invoice generated.
+	log = frappe.get_doc(
+		{
+			"doctype": "System Funding Log",
+			"wallet": wallet_id,
+			"role": wallet.get("role"),
+			"amount_usd": round(amount, 2),
+			"currency": currency,
+			"memo": memo,
+			"ibex_payment_hash": invoice_hash,
+			"initiated_by": frappe.session.user,
+		}
+	)
+	log.insert(ignore_permissions=True)
+	# audit_log writes a Frappe Comment whose reference_name is a Dynamic Link —
+	# it only persists against a REAL doctype row (a made-up wallet doctype
+	# reference fails link validation and the entry is silently dropped). Point it
+	# at the System Funding Log row we just inserted.
 	audit_log(
 		"funding_invoice",
-		"System Wallet",
-		wallet_id,
-		{"amount_usd": round(amount, 2), "currency": currency, "hash": invoice_hash},
+		"System Funding Log",
+		log.name,
+		{
+			"wallet": wallet_id,
+			"amount_usd": round(amount, 2),
+			"currency": currency,
+			"hash": invoice_hash,
+		},
 	)
 	return {
 		"wallet_id": wallet_id,

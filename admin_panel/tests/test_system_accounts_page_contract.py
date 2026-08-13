@@ -163,7 +163,31 @@ def test_funding_receipt_is_invoice_settlement_not_balance_delta():
 def test_funding_invoice_generation_is_audited():
 	# Generating an LN invoice on a treasury account is privileged — it must land
 	# in the audit trail, like transfer_between_system_wallets, not just app logs.
-	assert 'audit_log(\n\t\t"funding_invoice"' in API_PY or '"funding_invoice"' in API_PY
+	assert '"funding_invoice"' in API_PY
+	# The audit Comment's reference_name is a Dynamic Link — it only persists
+	# against a REAL doctype row. A row is inserted in the append-only System
+	# Funding Log and audit_log points at THAT row (never the fabricated
+	# "System Wallet", which is not a doctype and would fail link validation,
+	# silently dropping the audit entry).
+	assert '"doctype": "System Funding Log"' in API_PY, "must insert a real System Funding Log row"
+	assert '"System Funding Log",\n\t\tlog.name,' in API_PY, "audit_log must reference the inserted row"
+	assert '"System Wallet"' not in API_PY, "audit must not reference the non-existent System Wallet doctype"
+
+
+def test_funding_log_doctype_is_append_only():
+	# One row per funding invoice, and read-only via the desk (no New button, no
+	# write/create/delete perms) — same append-only guarantees as the transfer log.
+	dt = json.loads(
+		(
+			ADMIN_PANEL / "admin_panel" / "doctype" / "system_funding_log" / "system_funding_log.json"
+		).read_text()
+	)
+	assert dt["name"] == "System Funding Log"
+	assert dt["in_create"] == 1  # no desk New button
+	for perm in dt["permissions"]:
+		assert (
+			not perm.get("write") and not perm.get("create") and not perm.get("delete")
+		), f"System Funding Log must be read-only via desk: {perm}"
 
 
 def test_ibex_status_is_io_free():

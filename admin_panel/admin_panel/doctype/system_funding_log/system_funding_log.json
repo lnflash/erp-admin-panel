@@ -1,0 +1,95 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:SFL-{YYYY}-{#####}",
+ "creation": "2026-08-13 18:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "wallet",
+  "role",
+  "amount_usd",
+  "currency",
+  "memo",
+  "column_break_1",
+  "initiated_by",
+  "ibex_payment_hash"
+ ],
+ "fields": [
+  {
+   "fieldname": "wallet",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Wallet (IBEX id)",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "role",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "System Role",
+   "read_only": 1
+  },
+  {
+   "fieldname": "amount_usd",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Amount (USD)",
+   "precision": "2",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "memo",
+   "fieldtype": "Data",
+   "label": "Memo",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "initiated_by",
+   "fieldtype": "Data",
+   "label": "Initiated By",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ibex_payment_hash",
+   "fieldtype": "Data",
+   "label": "IBEX Payment Hash",
+   "read_only": 1
+  }
+ ],
+ "in_create": 1,
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-08-13 18:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Admin Panel",
+ "name": "System Funding Log",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "read": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "role": "Accounts Manager"
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "track_changes": 1
+}
