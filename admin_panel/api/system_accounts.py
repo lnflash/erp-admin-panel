@@ -1,4 +1,4 @@
-"""System accounts treasury: bankowner / funder / dealer live balances,
+"""System accounts treasury: bankowner / funder / dealer / rewards live balances,
 activity, cashout-payables coverage, and gated fund movement.
 
 Money-flow facts this module leans on (verified in the flash codebase):
@@ -21,15 +21,21 @@ import requests
 from .auth import audit_log, require_financial, require_roles
 from .common import handle_api_errors
 from .ibex_client import IbexClient
+from .ibex_status import invoice_settled
 from .mongo_reader import load_accounts, load_wallets
 
-SYSTEM_ROLES = ("bankowner", "funder", "dealer")
+SYSTEM_ROLES = ("bankowner", "funder", "dealer", "rewards")
 
 # Cashouts whose fiat leg has not been paid out yet.
 OUTSTANDING_CASHOUT_STATUSES = ("Pending", "Draft", "In Progress")
 
 # Hard ceiling on a single transfer unless site_config raises it.
 DEFAULT_TRANSFER_CAP_USD = 100.0
+
+# Fat-finger ceiling on a single funding invoice. Funding brings money IN (no
+# treasury outflow), so this is a sanity bound, not a risk limit — generous and
+# separately configurable via site_config system_funding_cap_usd.
+DEFAULT_FUNDING_CAP_USD = 100000.0
 
 CURRENCY_BY_ID = {0: "BTC", 3: "USD", 29: "USDT"}
 
@@ -112,7 +118,7 @@ def _watchlist_map():
 def _resolve_system_accounts():
 	"""All role accounts + the watchlist, with their wallets.
 
-	Role accounts (bankowner/funder/dealer) are always transfer-eligible.
+	Role accounts (bankowner/funder/dealer/rewards) are always transfer-eligible.
 	Watchlist accounts are VIEW-ONLY unless their doctype row has
 	allow_transfers set — a deliberate per-account opt-in.
 	"""
@@ -158,8 +164,8 @@ def _resolve_system_accounts():
 				"wallets": sorted(by_account.get(account_id, []), key=lambda w: w["wallet_id"]),
 			}
 		)
-	# bankowner first, then funder, dealer, watchlist
-	order = {"bankowner": 0, "funder": 1, "dealer": 2, "watchlist": 3}
+	# bankowner first, then funder, dealer, rewards, watchlist
+	order = {"bankowner": 0, "funder": 1, "dealer": 2, "rewards": 3, "watchlist": 4}
 	resolved.sort(key=lambda a: (order.get(a["role"], 9), a["username"] or ""))
 	return resolved
 
@@ -265,10 +271,177 @@ def get_system_account_activity(wallet_id, page=0, limit=20):
 
 
 @frappe.whitelist()
+@require_financial()
+@handle_api_errors
+def create_funding_invoice(wallet_id, amount_usd, memo=None):
+	"""Generate a Lightning receive invoice so an EXTERNAL payer can fund a
+	system wallet (bankowner/funder/dealer/rewards) from the page.
+
+	No treasury money moves here — an invoice is created ON the wallet's IBEX
+	account; the payer's Lightning payment credits it directly at IBEX. This is
+	the inbound cousin of transfer_between_system_wallets and reuses the same
+	sanctioned add_invoice (/v2/invoice/add) write — no new IBEX write path.
+
+	Denominated (USD/USDT) IBEX receive invoices are capped at ~60s expiry by
+	the hub, so the page counts down and regenerates — expiry_utc is returned
+	for that. Returns only display fields, never the raw IBEX response.
+	"""
+	wallet_id = frappe.utils.cstr(wallet_id)
+	try:
+		amount = float(amount_usd)
+	except (TypeError, ValueError):
+		frappe.throw("Amount must be a number")
+	# math.isfinite rejects NaN/inf, which slip past `amount > cap` (NaN
+	# comparisons are always False) and would reach IBEX.
+	if not math.isfinite(amount) or amount <= 0:
+		frappe.throw("Amount must be a positive number")
+	cap = float(frappe.conf.get("system_funding_cap_usd") or DEFAULT_FUNDING_CAP_USD)
+	if amount > cap:
+		frappe.throw(f"Amount exceeds the funding cap of ${cap:,.2f} (site_config system_funding_cap_usd)")
+
+	# Membership re-derived server-side — never a generate-invoice-for-any-wallet
+	# proxy.
+	wallet = None
+	for acc in _resolve_system_accounts():
+		for w in acc["wallets"]:
+			if w["wallet_id"] == wallet_id:
+				wallet = {**w, "role": acc["role"]}
+				break
+		if wallet:
+			break
+	if not wallet:
+		frappe.throw("Not a system-account wallet", frappe.PermissionError)
+	# A denominated invoice on a BTC (sats) wallet means a different unit; the
+	# page only offers Fund on USD/USDT rows, but guard the backend too.
+	if (wallet.get("mongo_currency") or "").upper() == "BTC":
+		frappe.throw("Funding invoices are USD/USDT only (BTC wallets use a different rail).")
+
+	memo = frappe.utils.cstr(memo or "Treasury funding")
+	# expiration=60 requests the hub's max window for a denominated invoice.
+	invoice = IbexClient().add_invoice(wallet_id, amount, memo=memo, expiration=60)
+	inv = invoice.get("invoice") or {}
+	bolt11 = inv.get("bolt11")
+	if not bolt11:
+		raise ValueError(f"IBEX add_invoice returned no bolt11: {str(invoice)[:200]}")
+	currency = (
+		CURRENCY_BY_ID.get(invoice.get("currencyId")) or wallet.get("mongo_currency") or "USD"
+	).upper()
+	# The payment hash identifies THIS invoice; the receipt poll confirms its
+	# settlement by hash (get_funding_invoice_status), never by a balance delta.
+	invoice_hash = frappe.utils.cstr(inv.get("hash") or "")
+	frappe.logger().info(f"funding_invoice wallet={wallet_id} amount={amount} by={frappe.session.user}")
+	# Generating an LN invoice on a treasury account is a privileged action — give
+	# it the same traceability trail as transfer_between_system_wallets: a row in
+	# the append-only System Funding Log, one per invoice generated.
+	#
+	# BEST-EFFORT: the invoice already exists at IBEX (add_invoice above is
+	# irreversible), so a logging failure must NEVER strand it by hiding the
+	# bolt11. The concrete trigger is the System Funding Log doctype not yet being
+	# migrated on a fresh deploy; a transient DB error is another. Warn and fall
+	# through to return the bolt11 regardless.
+	try:
+		log = frappe.get_doc(
+			{
+				"doctype": "System Funding Log",
+				"wallet": wallet_id,
+				"role": wallet.get("role"),
+				"amount_usd": round(amount, 2),
+				"currency": currency,
+				"memo": memo,
+				"ibex_payment_hash": invoice_hash,
+				"initiated_by": frappe.session.user,
+			}
+		)
+		log.insert(ignore_permissions=True)
+		# audit_log writes a Frappe Comment whose reference_name is a Dynamic Link —
+		# it only persists against a REAL doctype row (a made-up wallet doctype
+		# reference fails link validation and the entry is silently dropped). Point
+		# it at the System Funding Log row we just inserted.
+		audit_log(
+			"funding_invoice",
+			"System Funding Log",
+			log.name,
+			{
+				"wallet": wallet_id,
+				"amount_usd": round(amount, 2),
+				"currency": currency,
+				"hash": invoice_hash,
+			},
+		)
+	except Exception:
+		frappe.logger().warning(
+			f"funding_invoice audit write failed (invoice already issued) "
+			f"wallet={wallet_id} hash={invoice_hash}"
+		)
+	return {
+		"wallet_id": wallet_id,
+		"amount_usd": round(amount, 2),
+		"currency": currency,
+		"bolt11": bolt11,
+		"hash": invoice_hash,
+		"expiry_utc": inv.get("expiryDateUtc"),
+	}
+
+
+@frappe.whitelist()
+@require_financial()
+@handle_api_errors
+def get_funding_invoice_status(invoice_hash):
+	"""Settlement status of ONE funding invoice, by its payment hash, read from
+	IBEX (GET /invoice/from-hash) — the funding modal's authoritative receipt
+	signal.
+
+	This confirms the SPECIFIC invoice settled, never a wallet-balance rise: the
+	busiest treasury wallet (bankowner) grows with every cashout, so a balance
+	delta cannot tell this funding payment apart from routine inflow (that false
+	signal is exactly what this endpoint replaces). Membership was already
+	enforced when the invoice was issued (create_funding_invoice re-derives it
+	server-side before generating), so this read is deliberately cheap — one IBEX
+	call, no mongo/account scan — and safe to poll. `settled` is True only on an
+	affirmative IBEX SETTLED state; OPEN / ambiguous / unknown-hash all return
+	False so the UI keeps waiting and never claims receipt on a guess.
+	"""
+	invoice_hash = frappe.utils.cstr(invoice_hash)
+	if not invoice_hash:
+		frappe.throw("Invoice hash is required")
+	invoice = IbexClient().get_invoice_from_hash(invoice_hash)
+	state = invoice.get("state")
+	return {
+		"hash": invoice_hash,
+		"settled": invoice_settled(invoice) is True,
+		"state": state.get("name") if isinstance(state, dict) else None,
+	}
+
+
+@frappe.whitelist()
+@require_financial()
+@handle_api_errors
+def get_system_wallet_balance(wallet_id):
+	"""Live balance for ONE system wallet. Membership is re-derived server-side
+	via _resolve_system_accounts() (a full accounts+wallets scan), so this is NOT
+	a cheap call and must not be polled in a tight loop. The funding modal calls
+	it ONCE, after get_funding_invoice_status confirms settlement, to show the
+	updated balance in the confirmation line; per-tick receipt polling uses the
+	cheap invoice-status read instead."""
+	wallet_id = frappe.utils.cstr(wallet_id)
+	known = {w["wallet_id"] for acc in _resolve_system_accounts() for w in acc["wallets"]}
+	if wallet_id not in known:
+		frappe.throw("Not a system-account wallet", frappe.PermissionError)
+	details = IbexClient().get_account_details(wallet_id)
+	currency = (CURRENCY_BY_ID.get(details.get("currencyId")) or "USD").upper()
+	return {
+		"wallet_id": wallet_id,
+		"currency": currency,
+		"balance": float(details.get("balance") or 0.0),
+		"not_found": bool(details.get("not_found")),
+	}
+
+
+@frappe.whitelist()
 @require_roles(["System Manager"])
 @handle_api_errors
 def transfer_between_system_wallets(from_wallet_id, to_wallet_id, amount_usd, memo=None):
-	"""Move funds between two ROLE wallets (bankowner/funder/dealer only —
+	"""Move funds between two ROLE wallets (bankowner/funder/dealer/rewards only —
 	watchlist accounts are view-only). add_invoice on the receiver,
 	pay_invoice from the sender; every attempt is a System Transfer Log doc.
 

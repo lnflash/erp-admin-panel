@@ -14,8 +14,17 @@ const SA_ROLE_LABELS = {
 	bankowner: "BankOwner",
 	funder: "Funder",
 	dealer: "Dealer",
+	rewards: "Rewards",
 	watchlist: "Watchlist",
 };
+
+// How often the funding receipt poll checks THIS invoice's settlement at IBEX.
+const SA_FUND_POLL_INTERVAL_MS = 6000;
+// The receipt poll stops this long after the Fund dialog opens, so an operator
+// who generates an invoice and walks away can't leave it hammering the backend
+// forever. Roughly matches the ~15 auto-regenerations (15 × 60s). The manual
+// Regenerate / Refresh controls still work after it stops.
+const SA_FUND_POLL_MAX_MS = 15 * 60 * 1000;
 
 function saEsc(v) {
 	return frappe.utils.escape_html(String(v == null ? "" : v));
@@ -99,6 +108,8 @@ const SA_CSS = `
     .system-accounts .sa-chip.role-funder { background: var(--sa-accent-soft); color: var(--sa-accent-ink); }
     .system-accounts .sa-chip.role-dealer { background: var(--sa-accent-soft); color: var(--sa-accent-ink);
         opacity: 0.85; }
+    .system-accounts .sa-chip.role-rewards { background: var(--sa-accent-soft); color: var(--sa-accent-ink);
+        opacity: 0.7; }
     .system-accounts .sa-chip.st-ok { background: var(--sa-accent-soft); color: var(--sa-accent-ink); }
     .system-accounts .sa-chip.st-bad { background: var(--sa-serious-bg); color: var(--sa-serious); }
     .system-accounts .sa-chip.cur { background: var(--sa-line-soft); color: var(--sa-ink2); }
@@ -259,6 +270,13 @@ class SystemAccounts {
 									w.wallet_id
 								)}</span>
                         <span class="sa-spacer"></span>
+                        ${
+							(w.currency === "USD" || w.currency === "USDT") && !w.not_found
+								? `<button class="sa-btn sa-fund-btn" data-wallet="${saEsc(
+										w.wallet_id
+								  )}">Fund</button>`
+								: ""
+						}
                         <button class="sa-btn sa-activity-btn" data-wallet="${saEsc(
 							w.wallet_id
 						)}">Activity</button>
@@ -318,6 +336,9 @@ class SystemAccounts {
 
 		this.page.main.find(".sa-activity-btn").on("click", (e) => {
 			this.toggle_activity($(e.currentTarget).data("wallet"));
+		});
+		this.page.main.find(".sa-fund-btn").on("click", (e) => {
+			this.open_fund_dialog($(e.currentTarget).data("wallet"));
 		});
 		this.page.main.find(".sa-toggle-btn").on("click", (e) => {
 			const btn = $(e.currentTarget);
@@ -565,5 +586,192 @@ class SystemAccounts {
 				this.load();
 			},
 		});
+	}
+
+	wallet_meta(walletId) {
+		for (const acc of this.data?.accounts || []) {
+			for (const w of acc.wallets) {
+				if (w.wallet_id === walletId) return { w, role: acc.role, username: acc.username };
+			}
+		}
+		return null;
+	}
+
+	// Fund a system wallet: generate a Lightning receive invoice the operator
+	// pays from any wallet. No treasury funds move here — money comes IN.
+	open_fund_dialog(walletId) {
+		const meta = this.wallet_meta(walletId);
+		if (!meta) return;
+		const { w, role, username } = meta;
+		const roleLabel = SA_ROLE_LABELS[role] || role;
+		const d = new frappe.ui.Dialog({
+			title: `Fund ${roleLabel} · ${w.currency}`,
+			fields: [
+				{
+					fieldname: "amount",
+					fieldtype: "Currency",
+					label: `Amount (${w.currency})`,
+					reqd: 1,
+					description: `Into ${saEsc(username || w.wallet_id)} · ${saEsc(
+						w.wallet_id.slice(0, 8)
+					)}…`,
+				},
+				{ fieldname: "out", fieldtype: "HTML", options: "" },
+			],
+			primary_action_label: "Generate invoice",
+			primary_action: () => {
+				const amount = Number(d.get_value("amount"));
+				if (!amount || !isFinite(amount) || amount <= 0) {
+					frappe.msgprint("Enter a positive amount.");
+					return;
+				}
+				this.generate_funding_invoice(d, w, amount);
+			},
+		});
+		// Receipt is confirmed by polling THIS invoice's settlement at IBEX (by
+		// payment hash), never by a wallet-balance delta — the treasury wallets
+		// transact constantly, so a balance rise is not proof of this payment.
+		// The poll is bounded (SA_FUND_POLL_MAX_MS) and all timers clear on close.
+		d._timers = [];
+		d._regens = 0;
+		d._pollDeadline = Date.now() + SA_FUND_POLL_MAX_MS;
+		d.onhide = () => (d._timers || []).forEach((t) => clearInterval(t));
+		d.show();
+	}
+
+	generate_funding_invoice(d, w, amount) {
+		const out = d.fields_dict.out.$wrapper;
+		(d._timers || []).forEach((t) => clearInterval(t));
+		d._timers = [];
+		out.html('<div style="padding:8px 0;color:var(--text-muted);">Generating invoice…</div>');
+		frappe.call({
+			method: "admin_panel.api.system_accounts.create_funding_invoice",
+			args: { wallet_id: w.wallet_id, amount_usd: amount, memo: "Treasury funding" },
+			error: () =>
+				out.html(
+					'<div style="padding:8px 0;color:var(--red,#c0392b);">Could not generate an invoice — try again.</div>'
+				),
+			callback: (res) => {
+				const inv = res.message;
+				if (!inv || !inv.bolt11) {
+					out.html(
+						'<div style="padding:8px 0;color:var(--red,#c0392b);">No invoice returned.</div>'
+					);
+					return;
+				}
+				this.render_funding_invoice(d, w, amount, inv);
+			},
+		});
+	}
+
+	render_funding_invoice(d, w, amount, inv) {
+		const out = d.fields_dict.out.$wrapper;
+		const bolt11 = inv.bolt11;
+		const fmt = (n) =>
+			Number(n).toLocaleString(undefined, {
+				minimumFractionDigits: 2,
+				maximumFractionDigits: 2,
+			});
+		out.html(`
+			<div style="border:1px solid var(--border-color);border-radius:10px;padding:12px;margin-top:4px;">
+				<div style="font-size:13px;color:var(--text-muted);margin-bottom:6px;">
+					Pay <strong>$${fmt(inv.amount_usd || amount)} ${saEsc(
+			inv.currency || w.currency
+		)}</strong> from any Lightning wallet. Scanning from a phone pays atomically and beats the 60s expiry.
+				</div>
+				<textarea readonly style="width:100%;height:64px;font-family:var(--font-mono,monospace);font-size:11px;resize:none;padding:6px;border:1px solid var(--border-color);border-radius:8px;background:var(--control-bg,#f7f7f7);">${saEsc(
+					bolt11
+				)}</textarea>
+				<div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+					<button class="btn btn-xs btn-default sa-copy">Copy invoice</button>
+					<a class="btn btn-xs btn-default" href="lightning:${saEsc(bolt11)}">Open in wallet</a>
+					<button class="btn btn-xs btn-default sa-regen">Regenerate</button>
+					<span class="sa-countdown" style="font-size:12px;color:var(--text-muted);"></span>
+				</div>
+				<div class="sa-fund-status" style="margin-top:10px;font-size:13px;font-weight:600;color:var(--text-muted);">
+					Waiting for payment…
+				</div>
+			</div>
+		`);
+		out.find(".sa-copy").on("click", () => {
+			navigator.clipboard?.writeText(bolt11).then(
+				() => frappe.show_alert({ message: "Invoice copied.", indicator: "green" }, 3),
+				() => frappe.msgprint("Copy failed — select and copy manually.")
+			);
+		});
+		out.find(".sa-regen").on("click", () => this.generate_funding_invoice(d, w, amount));
+
+		// Countdown to expiry, auto-regenerating a bounded number of times so a
+		// slow scan isn't stranded; after that the manual Regenerate stays.
+		const expiryMs = inv.expiry_utc ? Date.parse(inv.expiry_utc) : Date.now() + 60000;
+		const cd = out.find(".sa-countdown");
+		const tick = setInterval(() => {
+			const left = Math.round((expiryMs - Date.now()) / 1000);
+			if (left > 0) {
+				cd.text(`expires in ${left}s`);
+			} else {
+				clearInterval(tick);
+				if ((d._regens || 0) < 15) {
+					d._regens = (d._regens || 0) + 1;
+					this.generate_funding_invoice(d, w, amount);
+				} else {
+					cd.text("expired — click Regenerate to keep funding");
+				}
+			}
+		}, 1000);
+		d._timers.push(tick);
+
+		// Receipt: confirm THIS invoice settled at IBEX, looked up by its payment
+		// hash — never a wallet-balance delta. The bankowner float grows with
+		// every cashout, so a balance rise cannot be sold as receipt of this
+		// funding payment. If the backend didn't return a hash we can't confirm
+		// automatically, so show a neutral note instead of a false ✓.
+		const invoiceHash = inv.hash;
+		const statusEl = out.find(".sa-fund-status");
+		if (!invoiceHash) {
+			statusEl.html(
+				"Waiting for payment… (auto-confirmation unavailable — use Refresh to check the balance)"
+			);
+			return;
+		}
+		const poll = setInterval(() => {
+			// Bound the poll so an abandoned dialog can't hit the backend forever.
+			if (Date.now() > (d._pollDeadline || 0)) {
+				(d._timers || []).forEach((t) => clearInterval(t));
+				d._timers = [];
+				statusEl.html(
+					"Stopped checking — click Regenerate or Refresh if you're still funding."
+				);
+				return;
+			}
+			frappe.call({
+				method: "admin_panel.api.system_accounts.get_funding_invoice_status",
+				args: { invoice_hash: invoiceHash },
+				callback: (res) => {
+					// settled is True ONLY on an affirmative IBEX SETTLED state;
+					// open/ambiguous keeps us waiting (never claim receipt on a guess).
+					if (!res.message || res.message.settled !== true) return;
+					(d._timers || []).forEach((t) => clearInterval(t));
+					d._timers = [];
+					statusEl
+						.css("color", "var(--green,#0ca30c)")
+						.html("✓ Received — payment settled");
+					// One-shot fresh balance for the confirmation line (NOT polled).
+					frappe.call({
+						method: "admin_panel.api.system_accounts.get_system_wallet_balance",
+						args: { wallet_id: w.wallet_id },
+						callback: (b) => {
+							const bal = Number(b.message?.balance);
+							if (isFinite(bal)) {
+								statusEl.html(`✓ Received — balance is now $${fmt(bal)}`);
+							}
+						},
+					});
+					frappe.show_alert({ message: "Funding received.", indicator: "green" }, 6);
+					this.load();
+				},
+			});
+		}, SA_FUND_POLL_INTERVAL_MS);
+		d._timers.push(poll);
 	}
 }

@@ -6,6 +6,7 @@ cap and a role-wallet-only guard, and every attempt lands in the
 append-only System Transfer Log.
 """
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -15,6 +16,8 @@ API_PY = (ADMIN_PANEL / "api" / "system_accounts.py").read_text()
 IBEX_PY = (ADMIN_PANEL / "api" / "ibex_client.py").read_text()
 PAGE_JS = (ADMIN_PANEL / "admin_panel" / "page" / "system_accounts" / "system_accounts.js").read_text()
 SETUP_PY = (ADMIN_PANEL / "admin_panel" / "setup.py").read_text()
+CENSUS_PY = (ADMIN_PANEL / "api" / "census_core.py").read_text()
+IBEX_STATUS_PY = (ADMIN_PANEL / "api" / "ibex_status.py").read_text()
 
 
 def test_read_endpoints_carry_the_financial_gate():
@@ -105,6 +108,148 @@ def test_transfer_does_not_leak_raw_ibex_response():
 def test_activity_endpoint_revalidates_wallet_membership():
 	assert '"Not a system-account wallet"' in API_PY
 	assert "frappe.PermissionError" in API_PY
+
+
+def test_funding_invoice_is_financial_gated_membership_checked_and_capped():
+	stack = "@frappe.whitelist()\n@require_financial()\n@handle_api_errors\ndef create_funding_invoice("
+	assert (
+		stack in API_PY
+	), "create_funding_invoice must be whitelisted + require_financial + handle_api_errors"
+	# reuses the sanctioned add_invoice write — no new IBEX write path
+	assert "IbexClient().add_invoice(" in API_PY
+	# membership re-derived server-side — not a generate-for-any-wallet proxy
+	assert '"Not a system-account wallet"' in API_PY
+	# fat-finger ceiling: configurable AND actually compared, not just referenced
+	assert "system_funding_cap_usd" in API_PY
+	assert "DEFAULT_FUNDING_CAP_USD" in API_PY
+	assert "exceeds the funding cap" in API_PY
+	# returns only display fields — never the raw IBEX invoice blob
+	assert '"invoice": invoice' not in API_PY
+
+
+def test_wallet_balance_read_is_financial_gated_and_membership_checked():
+	stack = "@frappe.whitelist()\n@require_financial()\n@handle_api_errors\ndef get_system_wallet_balance("
+	assert stack in API_PY
+	assert '"Not a system-account wallet"' in API_PY
+
+
+def test_funding_receipt_is_invoice_settlement_not_balance_delta():
+	# The receipt signal must confirm THIS invoice settled at IBEX (by payment
+	# hash), never infer it from a wallet-balance rise — the bankowner float grows
+	# with every cashout, so a delta cannot distinguish the funding payment from
+	# routine inflow.
+	stack = "@frappe.whitelist()\n@require_financial()\n@handle_api_errors\ndef get_funding_invoice_status("
+	assert stack in API_PY, "get_funding_invoice_status must be whitelisted + financial-gated"
+	# it reads the specific invoice by hash and interprets settlement fail-safe
+	assert "get_invoice_from_hash(" in API_PY
+	assert "invoice_settled(invoice)" in API_PY
+	assert "def get_invoice_from_hash(" in IBEX_PY
+	assert "/invoice/from-hash/" in IBEX_PY
+	# create_funding_invoice returns the payment hash the poll keys on
+	assert '"hash": invoice_hash' in API_PY
+
+	# The page polls settlement, not balance — and the old balance-delta receipt
+	# heuristic is gone (baseline capture + `bal - baseline >= amount`).
+	assert "admin_panel.api.system_accounts.get_funding_invoice_status" in PAGE_JS
+	assert "settled !== true" in PAGE_JS
+	assert "inv.hash" in PAGE_JS
+	assert "d._baseline" not in PAGE_JS, "balance-delta receipt heuristic must be removed"
+	assert "bal - (d._baseline" not in PAGE_JS
+
+	# The poll is bounded so an abandoned Fund dialog can't hammer the backend.
+	assert "SA_FUND_POLL_MAX_MS" in PAGE_JS
+	assert "_pollDeadline" in PAGE_JS
+
+
+def test_funding_invoice_generation_is_audited():
+	# Generating an LN invoice on a treasury account is privileged — it must land
+	# in the audit trail, like transfer_between_system_wallets, not just app logs.
+	assert '"funding_invoice"' in API_PY
+	# The audit Comment's reference_name is a Dynamic Link — it only persists
+	# against a REAL doctype row. A row is inserted in the append-only System
+	# Funding Log and audit_log points at THAT row (never the fabricated
+	# "System Wallet", which is not a doctype and would fail link validation,
+	# silently dropping the audit entry).
+	assert '"doctype": "System Funding Log"' in API_PY, "must insert a real System Funding Log row"
+	assert re.search(
+		r'"System Funding Log",\s*\n\s*log\.name,', API_PY
+	), "audit_log must reference the inserted System Funding Log row"
+	assert '"System Wallet"' not in API_PY, "audit must not reference the non-existent System Wallet doctype"
+	# BEST-EFFORT: the invoice already exists at IBEX before we log, so a logging
+	# failure (e.g. the doctype not yet migrated) must never strand the invoice by
+	# hiding its bolt11 — the audit write is wrapped and falls through to return.
+	assert "funding_invoice audit write failed" in API_PY
+
+
+def test_funding_audit_best_effort_return_survives_insert_failure():
+	# The audit write is the ONE control preventing a stranded irreversible LN
+	# invoice, so a string grep isn't enough — it would pass even if the except
+	# re-raised or the bolt11 return moved inside the try. There's no frappe test
+	# harness here (the module imports frappe at top level), so assert the two
+	# failure modes structurally via AST instead: (1) the audit except must not
+	# re-raise, and (2) the bolt11 return must be a sibling AFTER the audit
+	# try/except, so it is reached on fallthrough when the insert throws.
+	fn = next(
+		n
+		for n in ast.walk(ast.parse(API_PY))
+		if isinstance(n, ast.FunctionDef) and n.name == "create_funding_invoice"
+	)
+	body = fn.body
+	# the audit try is the one whose body creates the System Funding Log row
+	# (create_funding_invoice also has an earlier try around float(amount_usd))
+	try_idx = next(
+		i for i, s in enumerate(body) if isinstance(s, ast.Try) and "System Funding Log" in ast.dump(s)
+	)
+	audit_try = body[try_idx]
+	for handler in audit_try.handlers:
+		assert not any(
+			isinstance(x, ast.Raise) for x in ast.walk(handler)
+		), "the funding-audit except must not re-raise — it would strand the created invoice"
+	assert any(
+		isinstance(s, ast.Return) and "bolt11" in ast.dump(s) for s in body[try_idx + 1 :]
+	), "the bolt11 return must follow the audit try/except, not sit inside it"
+
+
+def test_funding_log_doctype_is_append_only():
+	# One row per funding invoice, and read-only via the desk (no New button, no
+	# write/create/delete perms) — same append-only guarantees as the transfer log.
+	dt = json.loads(
+		(
+			ADMIN_PANEL / "admin_panel" / "doctype" / "system_funding_log" / "system_funding_log.json"
+		).read_text()
+	)
+	assert dt["name"] == "System Funding Log"
+	assert dt["in_create"] == 1  # no desk New button
+	for perm in dt["permissions"]:
+		assert (
+			not perm.get("write") and not perm.get("create") and not perm.get("delete")
+		), f"System Funding Log must be read-only via desk: {perm}"
+
+
+def test_ibex_status_is_io_free():
+	# invoice_settled is the money-critical receipt decision; it must stay pure
+	# (no frappe/requests/pymongo) so it can be unit-tested against fixtures.
+	for banned in ("import frappe", "import requests", "import pymongo"):
+		assert banned not in IBEX_STATUS_PY, f"ibex_status must stay IO-free: found {banned}"
+	assert "def invoice_settled(" in IBEX_STATUS_PY
+
+
+def test_funding_ui_is_wired_and_usd_usdt_only():
+	assert "admin_panel.api.system_accounts.create_funding_invoice" in PAGE_JS
+	assert "admin_panel.api.system_accounts.get_system_wallet_balance" in PAGE_JS
+	assert "sa-fund-btn" in PAGE_JS
+	# Fund is only offered on USD/USDT rows — BTC uses a different rail
+	assert 'w.currency === "USD" || w.currency === "USDT"' in PAGE_JS
+
+
+def test_rewards_is_a_first_class_system_role():
+	# a real role=rewards treasury account must be enumerated like bankowner/
+	# funder/dealer — in the system-role set + ordering, the page's role labels,
+	# and the census system-vs-customer classification (never counted a customer).
+	assert '"rewards"' in API_PY
+	assert '"rewards": 3' in API_PY  # ordered after dealer, before watchlist
+	assert 'rewards: "Rewards"' in PAGE_JS
+	assert '"rewards"' in CENSUS_PY
 
 
 def test_ibex_client_write_surface_is_exactly_the_two_invoice_calls():
