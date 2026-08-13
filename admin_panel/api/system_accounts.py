@@ -31,6 +31,11 @@ OUTSTANDING_CASHOUT_STATUSES = ("Pending", "Draft", "In Progress")
 # Hard ceiling on a single transfer unless site_config raises it.
 DEFAULT_TRANSFER_CAP_USD = 100.0
 
+# Fat-finger ceiling on a single funding invoice. Funding brings money IN (no
+# treasury outflow), so this is a sanity bound, not a risk limit — generous and
+# separately configurable via site_config system_funding_cap_usd.
+DEFAULT_FUNDING_CAP_USD = 100000.0
+
 CURRENCY_BY_ID = {0: "BTC", 3: "USD", 29: "USDT"}
 
 # IBEX pay-invoice status: 2 = SUCCEEDED (verified against the hub).
@@ -262,6 +267,93 @@ def get_system_account_activity(wallet_id, page=0, limit=20):
 		for tx in raw
 	]
 	return {"wallet_id": wallet_id, "page": page, "transactions": transactions}
+
+
+@frappe.whitelist()
+@require_financial()
+@handle_api_errors
+def create_funding_invoice(wallet_id, amount_usd, memo=None):
+	"""Generate a Lightning receive invoice so an EXTERNAL payer can fund a
+	system wallet (bankowner/funder/dealer) from the page.
+
+	No treasury money moves here — an invoice is created ON the wallet's IBEX
+	account; the payer's Lightning payment credits it directly at IBEX. This is
+	the inbound cousin of transfer_between_system_wallets and reuses the same
+	sanctioned add_invoice (/v2/invoice/add) write — no new IBEX write path.
+
+	Denominated (USD/USDT) IBEX receive invoices are capped at ~60s expiry by
+	the hub, so the page counts down and regenerates — expiry_utc is returned
+	for that. Returns only display fields, never the raw IBEX response.
+	"""
+	wallet_id = frappe.utils.cstr(wallet_id)
+	try:
+		amount = float(amount_usd)
+	except (TypeError, ValueError):
+		frappe.throw("Amount must be a number")
+	# math.isfinite rejects NaN/inf, which slip past `amount > cap` (NaN
+	# comparisons are always False) and would reach IBEX.
+	if not math.isfinite(amount) or amount <= 0:
+		frappe.throw("Amount must be a positive number")
+	cap = float(frappe.conf.get("system_funding_cap_usd") or DEFAULT_FUNDING_CAP_USD)
+	if amount > cap:
+		frappe.throw(f"Amount exceeds the funding cap of ${cap:,.2f} (site_config system_funding_cap_usd)")
+
+	# Membership re-derived server-side — never a generate-invoice-for-any-wallet
+	# proxy.
+	wallet = None
+	for acc in _resolve_system_accounts():
+		for w in acc["wallets"]:
+			if w["wallet_id"] == wallet_id:
+				wallet = {**w, "role": acc["role"]}
+				break
+		if wallet:
+			break
+	if not wallet:
+		frappe.throw("Not a system-account wallet", frappe.PermissionError)
+	# A denominated invoice on a BTC (sats) wallet means a different unit; the
+	# page only offers Fund on USD/USDT rows, but guard the backend too.
+	if (wallet.get("mongo_currency") or "").upper() == "BTC":
+		frappe.throw("Funding invoices are USD/USDT only (BTC wallets use a different rail).")
+
+	memo = frappe.utils.cstr(memo or "Treasury funding")
+	# expiration=60 requests the hub's max window for a denominated invoice.
+	invoice = IbexClient().add_invoice(wallet_id, amount, memo=memo, expiration=60)
+	inv = invoice.get("invoice") or {}
+	bolt11 = inv.get("bolt11")
+	if not bolt11:
+		raise ValueError(f"IBEX add_invoice returned no bolt11: {str(invoice)[:200]}")
+	currency = (
+		CURRENCY_BY_ID.get(invoice.get("currencyId")) or wallet.get("mongo_currency") or "USD"
+	).upper()
+	frappe.logger().info(f"funding_invoice wallet={wallet_id} amount={amount} by={frappe.session.user}")
+	return {
+		"wallet_id": wallet_id,
+		"amount_usd": round(amount, 2),
+		"currency": currency,
+		"bolt11": bolt11,
+		"expiry_utc": inv.get("expiryDateUtc"),
+	}
+
+
+@frappe.whitelist()
+@require_financial()
+@handle_api_errors
+def get_system_wallet_balance(wallet_id):
+	"""Live balance for ONE system wallet — a cheap single-wallet read for the
+	funding modal's receipt poll (get_system_accounts fetches every wallet, too
+	heavy to poll). Membership re-derived server-side."""
+	wallet_id = frappe.utils.cstr(wallet_id)
+	known = {w["wallet_id"] for acc in _resolve_system_accounts() for w in acc["wallets"]}
+	if wallet_id not in known:
+		frappe.throw("Not a system-account wallet", frappe.PermissionError)
+	details = IbexClient().get_account_details(wallet_id)
+	currency = (CURRENCY_BY_ID.get(details.get("currencyId")) or "USD").upper()
+	return {
+		"wallet_id": wallet_id,
+		"currency": currency,
+		"balance": float(details.get("balance") or 0.0),
+		"not_found": bool(details.get("not_found")),
+	}
 
 
 @frappe.whitelist()

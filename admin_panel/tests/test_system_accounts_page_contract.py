@@ -107,6 +107,37 @@ def test_activity_endpoint_revalidates_wallet_membership():
 	assert "frappe.PermissionError" in API_PY
 
 
+def test_funding_invoice_is_financial_gated_membership_checked_and_capped():
+	stack = "@frappe.whitelist()\n@require_financial()\n@handle_api_errors\ndef create_funding_invoice("
+	assert (
+		stack in API_PY
+	), "create_funding_invoice must be whitelisted + require_financial + handle_api_errors"
+	# reuses the sanctioned add_invoice write — no new IBEX write path
+	assert "IbexClient().add_invoice(" in API_PY
+	# membership re-derived server-side — not a generate-for-any-wallet proxy
+	assert '"Not a system-account wallet"' in API_PY
+	# fat-finger ceiling: configurable AND actually compared, not just referenced
+	assert "system_funding_cap_usd" in API_PY
+	assert "DEFAULT_FUNDING_CAP_USD" in API_PY
+	assert "exceeds the funding cap" in API_PY
+	# returns only display fields — never the raw IBEX invoice blob
+	assert '"invoice": invoice' not in API_PY
+
+
+def test_wallet_balance_read_is_financial_gated_and_membership_checked():
+	stack = "@frappe.whitelist()\n@require_financial()\n@handle_api_errors\ndef get_system_wallet_balance("
+	assert stack in API_PY
+	assert '"Not a system-account wallet"' in API_PY
+
+
+def test_funding_ui_is_wired_and_usd_usdt_only():
+	assert "admin_panel.api.system_accounts.create_funding_invoice" in PAGE_JS
+	assert "admin_panel.api.system_accounts.get_system_wallet_balance" in PAGE_JS
+	assert "sa-fund-btn" in PAGE_JS
+	# Fund is only offered on USD/USDT rows — BTC uses a different rail
+	assert 'w.currency === "USD" || w.currency === "USDT"' in PAGE_JS
+
+
 def test_ibex_client_write_surface_is_exactly_the_two_invoice_calls():
 	assert '"/v2/invoice/add"' in IBEX_PY
 	assert '"/v2/invoice/pay"' in IBEX_PY
