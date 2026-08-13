@@ -170,8 +170,14 @@ def test_funding_invoice_generation_is_audited():
 	# "System Wallet", which is not a doctype and would fail link validation,
 	# silently dropping the audit entry).
 	assert '"doctype": "System Funding Log"' in API_PY, "must insert a real System Funding Log row"
-	assert '"System Funding Log",\n\t\tlog.name,' in API_PY, "audit_log must reference the inserted row"
+	assert re.search(
+		r'"System Funding Log",\s*\n\s*log\.name,', API_PY
+	), "audit_log must reference the inserted System Funding Log row"
 	assert '"System Wallet"' not in API_PY, "audit must not reference the non-existent System Wallet doctype"
+	# BEST-EFFORT: the invoice already exists at IBEX before we log, so a logging
+	# failure (e.g. the doctype not yet migrated) must never strand the invoice by
+	# hiding its bolt11 — the audit write is wrapped and falls through to return.
+	assert "funding_invoice audit write failed" in API_PY
 
 
 def test_funding_log_doctype_is_append_only():
