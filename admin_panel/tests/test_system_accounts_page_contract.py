@@ -6,6 +6,7 @@ cap and a role-wallet-only guard, and every attempt lands in the
 append-only System Transfer Log.
 """
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -178,6 +179,35 @@ def test_funding_invoice_generation_is_audited():
 	# failure (e.g. the doctype not yet migrated) must never strand the invoice by
 	# hiding its bolt11 — the audit write is wrapped and falls through to return.
 	assert "funding_invoice audit write failed" in API_PY
+
+
+def test_funding_audit_best_effort_return_survives_insert_failure():
+	# The audit write is the ONE control preventing a stranded irreversible LN
+	# invoice, so a string grep isn't enough — it would pass even if the except
+	# re-raised or the bolt11 return moved inside the try. There's no frappe test
+	# harness here (the module imports frappe at top level), so assert the two
+	# failure modes structurally via AST instead: (1) the audit except must not
+	# re-raise, and (2) the bolt11 return must be a sibling AFTER the audit
+	# try/except, so it is reached on fallthrough when the insert throws.
+	fn = next(
+		n
+		for n in ast.walk(ast.parse(API_PY))
+		if isinstance(n, ast.FunctionDef) and n.name == "create_funding_invoice"
+	)
+	body = fn.body
+	# the audit try is the one whose body creates the System Funding Log row
+	# (create_funding_invoice also has an earlier try around float(amount_usd))
+	try_idx = next(
+		i for i, s in enumerate(body) if isinstance(s, ast.Try) and "System Funding Log" in ast.dump(s)
+	)
+	audit_try = body[try_idx]
+	for handler in audit_try.handlers:
+		assert not any(
+			isinstance(x, ast.Raise) for x in ast.walk(handler)
+		), "the funding-audit except must not re-raise — it would strand the created invoice"
+	assert any(
+		isinstance(s, ast.Return) and "bolt11" in ast.dump(s) for s in body[try_idx + 1 :]
+	), "the bolt11 return must follow the audit try/except, not sit inside it"
 
 
 def test_funding_log_doctype_is_append_only():
