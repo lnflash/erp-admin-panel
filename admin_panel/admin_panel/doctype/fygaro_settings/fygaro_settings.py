@@ -27,3 +27,8 @@ class FygaroSettings(Document):
 
 		if frappe.utils.flt(self.auto_credit_limit) < frappe.utils.flt(self.minimum_topup):
 			frappe.throw("Auto-Credit Limit cannot be below the Minimum Top-Up.")
+
+		# Zero is a deliberate "no card top-ups for this level"; negative is a typo.
+		for fieldname in ("l1_daily_limit", "l2_daily_limit", "l3_daily_limit"):
+			if frappe.utils.flt(self.get(fieldname)) < 0:
+				frappe.throw(f"{self.meta.get_label(fieldname)} cannot be negative.")
