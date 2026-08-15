@@ -15,7 +15,11 @@
   "auto_credit_section",
   "auto_credit_enabled",
   "auto_credit_limit",
-  "minimum_topup"
+  "minimum_topup",
+  "daily_limits_section",
+  "l1_daily_limit",
+  "l2_daily_limit",
+  "l3_daily_limit"
  ],
  "fields": [
   {
@@ -88,12 +92,38 @@
    "fieldname": "minimum_topup",
    "fieldtype": "Currency",
    "label": "Minimum Top-Up (USD)"
+  },
+  {
+   "fieldname": "daily_limits_section",
+   "fieldtype": "Section Break",
+   "label": "Daily Top-Up Limits (per account level)"
+  },
+  {
+   "default": "125.00",
+   "description": "Maximum gross card top-up per rolling 24h for Level 1 accounts (USD). Payments that would exceed it go to manual review.",
+   "fieldname": "l1_daily_limit",
+   "fieldtype": "Currency",
+   "label": "L1 Daily Limit (USD)"
+  },
+  {
+   "default": "1000.00",
+   "description": "Maximum gross card top-up per rolling 24h for Level 2 accounts (USD).",
+   "fieldname": "l2_daily_limit",
+   "fieldtype": "Currency",
+   "label": "L2 Daily Limit (USD)"
+  },
+  {
+   "default": "2500.00",
+   "description": "Maximum gross card top-up per rolling 24h for Level 3 (Business) accounts (USD).",
+   "fieldname": "l3_daily_limit",
+   "fieldtype": "Currency",
+   "label": "L3 Daily Limit (USD)"
   }
  ],
  "index_web_pages_for_search": 0,
  "issingle": 1,
  "links": [],
- "modified": "2026-08-10 00:00:00.000000",
+ "modified": "2026-08-14 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Admin Panel",
  "name": "Fygaro Settings",
