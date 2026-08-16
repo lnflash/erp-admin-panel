@@ -1,0 +1,111 @@
+{
+ "actions": [],
+ "autoname": "field:username",
+ "creation": "2026-08-16 00:00:00.000000",
+ "custom": 0,
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "username",
+  "discount_percent",
+  "active",
+  "column_break_flows",
+  "applies_to_topup",
+  "applies_to_cashout",
+  "notes_section",
+  "notes"
+ ],
+ "fields": [
+  {
+   "description": "Flash username this discount applies to (exact match, case-sensitive).",
+   "fieldname": "username",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Username",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "description": "Percentage taken OFF the Flash fee (not off the gross amount). 100 waives the Flash fee entirely; processor fees still apply.",
+   "fieldname": "discount_percent",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Flash Fee Discount (%)",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "description": "Uncheck to suspend the discount without deleting the row.",
+   "fieldname": "active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Active"
+  },
+  {
+   "fieldname": "column_break_flows",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "description": "Apply to Fygaro card top-ups (discounts the Flash margin on auto-credit).",
+   "fieldname": "applies_to_topup",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Applies to Card Top-Ups"
+  },
+  {
+   "default": "1",
+   "description": "Apply to Jamaican bank cashouts (discounts the Flash service fee on the offer).",
+   "fieldname": "applies_to_cashout",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Applies to Bank Cashouts"
+  },
+  {
+   "fieldname": "notes_section",
+   "fieldtype": "Section Break",
+   "label": "Notes"
+  },
+  {
+   "description": "Why this user gets a discount (who approved it, until when, etc.).",
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-16 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Admin Panel",
+ "name": "Fee Discount",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
