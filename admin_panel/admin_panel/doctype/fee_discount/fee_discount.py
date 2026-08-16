@@ -19,11 +19,18 @@ class FeeDiscount(Document):
 		if not self.username:
 			frappe.throw("Username is required.")
 
-		# set_only_once normally blocks username edits on saved rows, but a
-		# programmatic change must re-resolve too — the flash reader matches
-		# the stored string exactly (trim only, case-sensitive).
+		# In-place username edits on a saved row can NEVER work with autoname
+		# field:username: Frappe v15's _sync_autoname_field reverts the field
+		# to self.name BEFORE validate_set_only_once compares, so a scripted /
+		# REST edit would "succeed" while the username silently snaps back —
+		# the caller believes the discount moved; the old user keeps it.
+		# (set_only_once's real effect is only making the field read-only in
+		# Desk.) Reject loudly and point at the one path that actually works.
 		if not self.is_new() and self.has_value_changed("username"):
-			self._sync_username_with_flash()
+			frappe.throw(
+				"Username cannot be edited in place — use the Rename dialog, "
+				"which verifies the new username against flash."
+			)
 
 		value = frappe.utils.flt(self.discount_percent)
 		if value < 0 or value > 100:
@@ -53,13 +60,14 @@ class FeeDiscount(Document):
 	def _resolve_flash_username(self, username):
 		"""Resolve a username against flash and return its canonical form.
 
-		The flash reader keys its discount map on the exact stored string
-		(trim only, case-sensitive) and fails open to a 0% discount for
-		unknown usernames — a typo'd or case-drifted entry would save
-		cleanly and silently never discount. Unknown username → block the
-		save; found → return flash's canonical spelling (closes case
-		drift); flash unreachable → warn but return the trimmed input, so
-		a flash outage never bricks the admin panel.
+		The flash reader matches case-insensitively (both sides lowercased)
+		but fails open to a 0% discount for unknown usernames — a typo'd
+		entry would save cleanly and silently never discount, which is why
+		existence is verified here. Unknown username → block the save;
+		found → return flash's canonical spelling (keeps the row name
+		matching what the admin pages display); flash unreachable → warn
+		but return the trimmed input, so a flash outage never bricks the
+		admin panel.
 		"""
 		username = (username or "").strip()
 		if not username:

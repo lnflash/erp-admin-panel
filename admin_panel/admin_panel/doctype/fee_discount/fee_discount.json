@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_rename": 1,
  "autoname": "field:username",
  "creation": "2026-08-16 00:00:00.000000",
  "custom": 0,
@@ -17,7 +18,7 @@
  ],
  "fields": [
   {
-   "description": "Flash username this discount applies to (exact match, case-sensitive — verified against flash and canonicalized on create and rename). Fixed after creation; use the Rename dialog to change it.",
+   "description": "Flash username this discount applies to (matched case-insensitively; verified against flash and canonicalized on create and rename). Fixed after creation; use the Rename dialog to change it.",
    "fieldname": "username",
    "fieldtype": "Data",
    "in_list_view": 1,

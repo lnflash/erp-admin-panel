@@ -63,11 +63,25 @@ def test_username_is_set_only_once():
 
 	# With autoname field:username, Frappe's _sync_autoname_field silently
 	# reverts any direct edit of the field back to the document name on save —
-	# an operator "fixing" a typo would see the save succeed and the value
-	# snap back. set_only_once turns that silent revert into a loud
-	# CannotChangeConstantError; renaming still works via the Rename dialog,
-	# which updates both the name and the field.
+	# BEFORE validate_set_only_once compares, so the constant-field error can
+	# never fire for an autoname field. set_only_once's real effect is making
+	# the field read-only in Desk; the controller's validate() supplies the
+	# loud rejection for scripted edits, and the Rename dialog (which updates
+	# both the name and the field) is the one working change path.
 	assert fields["username"]["set_only_once"] == 1
+
+
+def test_doctype_allows_rename():
+	doctype = load_doctype()
+
+	# The entire username-change workflow (set_only_once + the field
+	# description + before_rename verification) funnels through the Rename
+	# dialog, which only renders when meta.allow_rename is set. Doctype sync
+	# imports run under frappe.flags.in_import, where _set_defaults is
+	# skipped and an absent Check field serializes as 0 — so omitting the key
+	# here would sync as allow_rename=0 on a fresh site and make the username
+	# completely immutable (delete-and-recreate the row to fix a typo).
+	assert doctype["allow_rename"] == 1
 
 
 def test_flow_checkboxes_and_active_default_on():
@@ -203,10 +217,9 @@ def test_validate_rejects_a_discount_that_applies_to_nothing():
 
 
 # ---------------------------------------------------------------------------
-# Username resolution against flash. The flash reader keys its Map on the
-# exact stored string (trim only, case-sensitive) and fails open to 0% for
-# unknown usernames — so an unverified typo would save cleanly and silently
-# never discount.
+# Username resolution against flash. The flash reader matches
+# case-insensitively but fails open to 0% for unknown usernames — so an
+# unverified typo would save cleanly and silently never discount.
 # ---------------------------------------------------------------------------
 
 
@@ -236,16 +249,20 @@ def test_flash_outage_warns_but_never_blocks_the_save(flash, frappe_runtime):
 	assert frappe_runtime.messages, "operator must see a could-not-verify warning"
 
 
-def test_validate_reresolves_when_username_changes_on_a_saved_row(flash):
+def test_validate_rejects_in_place_username_edits_on_a_saved_row(flash):
+	# An in-place edit can never take effect: _sync_autoname_field reverts the
+	# field to the document name before the save completes, so accepting it
+	# here would let a scripted edit "succeed" while the discount silently
+	# stays with the old user. The Rename dialog is the one working path.
 	flash.account = {"username": "carol"}
 	doc = _make_doc(
-		username="Carol",
+		username="carol",
 		is_new=lambda: False,
 		has_value_changed=lambda fieldname: fieldname == "username",
 	)
-	doc.validate()
-	assert doc.username == "carol"
-	assert flash.lookups == ["Carol"]
+	with pytest.raises(_ValidationError):
+		doc.validate()
+	assert flash.lookups == []
 
 
 def test_validate_skips_the_flash_lookup_when_username_is_unchanged(flash):
