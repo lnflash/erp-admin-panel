@@ -96,9 +96,9 @@ class FeeDiscount(Document):
 		if not account:
 			frappe.throw(
 				f"No flash account found with username '{username}'. "
-				"Discounts are matched against the flash username exactly "
-				"(case-sensitive), so an unknown username would save cleanly "
-				"and silently never apply."
+				"An unknown username would save cleanly and silently never "
+				"apply (matching is case-insensitive — existence is what's "
+				"being verified). Check the spelling against the flash account."
 			)
 
 		canonical = (account.get("username") or "").strip()
