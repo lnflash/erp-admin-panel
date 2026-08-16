@@ -252,3 +252,43 @@ def test_validate_skips_the_flash_lookup_when_username_is_unchanged(flash):
 	doc = _make_doc(is_new=lambda: False, has_value_changed=lambda fieldname: False)
 	doc.validate()
 	assert flash.lookups == []
+
+
+# ---------------------------------------------------------------------------
+# Rename-dialog path. set_only_once (and the field description) funnel every
+# username change into rename_doc, which writes both the document name and the
+# username column raw — before_insert/validate never run. before_rename is the
+# only verification point on that path: rename_doc honors a returned
+# {"new": ...} override, so the rename lands on flash's canonical spelling.
+# ---------------------------------------------------------------------------
+
+
+def test_before_rename_rejects_a_username_flash_does_not_know(flash):
+	flash.account = None  # flash: no such account
+	doc = _make_doc(username="johnb")
+	with pytest.raises(_ValidationError):
+		doc.before_rename("johnb", "jhonb2")
+	assert flash.lookups == ["jhonb2"]
+
+
+def test_before_rename_returns_flash_canonical_spelling(flash):
+	flash.account = {"username": "johnb2"}
+	doc = _make_doc(username="johnb")
+	out = doc.before_rename("johnb", "  JohnB2  ")
+	assert out == {"new": "johnb2"}
+	assert flash.lookups == ["JohnB2"]
+
+
+def test_before_rename_rejects_a_blank_new_name(flash):
+	doc = _make_doc(username="johnb")
+	with pytest.raises(_ValidationError):
+		doc.before_rename("johnb", "   ")
+	assert flash.lookups == []
+
+
+def test_before_rename_flash_outage_warns_but_allows_the_rename(flash, frappe_runtime):
+	flash.error = RuntimeError("flash is down")
+	doc = _make_doc(username="johnb")
+	out = doc.before_rename("johnb", "johnb2")  # must not raise — an outage must not brick renames
+	assert out == {"new": "johnb2"}
+	assert frappe_runtime.messages, "operator must see a could-not-verify warning"

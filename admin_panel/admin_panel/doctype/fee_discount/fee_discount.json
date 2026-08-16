@@ -17,7 +17,7 @@
  ],
  "fields": [
   {
-   "description": "Flash username this discount applies to (exact match, case-sensitive — verified against flash and canonicalized on create). Fixed after creation; use the Rename dialog to change it.",
+   "description": "Flash username this discount applies to (exact match, case-sensitive — verified against flash and canonicalized on create and rename). Fixed after creation; use the Rename dialog to change it.",
    "fieldname": "username",
    "fieldtype": "Data",
    "in_list_view": 1,

@@ -35,25 +35,40 @@ class FeeDiscount(Document):
 				"(Card Top-Ups and/or Bank Cashouts) — uncheck Active to suspend it instead."
 			)
 
+	def before_rename(self, old, new, merge=False):
+		# The Rename dialog is the documented path for changing the username
+		# (set_only_once blocks direct edits, and the field description points
+		# operators here) — but rename_doc writes both the document name and
+		# the username column raw, bypassing before_insert/validate entirely.
+		# Without this hook a typo'd rename would succeed silently and the
+		# flash reader would fail open to a 0% discount. Same resolution as
+		# create: unknown username → block the rename; found → rename to
+		# flash's canonical spelling (rename_doc honors the returned "new"
+		# override); flash unreachable → warn but allow.
+		return {"new": self._resolve_flash_username(new)}
+
 	def _sync_username_with_flash(self):
-		"""Resolve the username against flash and store its canonical form.
+		self.username = self._resolve_flash_username(self.username)
+
+	def _resolve_flash_username(self, username):
+		"""Resolve a username against flash and return its canonical form.
 
 		The flash reader keys its discount map on the exact stored string
 		(trim only, case-sensitive) and fails open to a 0% discount for
 		unknown usernames — a typo'd or case-drifted entry would save
 		cleanly and silently never discount. Unknown username → block the
-		save; found → store flash's canonical spelling (closes case drift);
-		flash unreachable → warn but allow the save, so a flash outage
-		never bricks the admin panel.
+		save; found → return flash's canonical spelling (closes case
+		drift); flash unreachable → warn but return the trimmed input, so
+		a flash outage never bricks the admin panel.
 		"""
-		self.username = (self.username or "").strip()
-		if not self.username:
+		username = (username or "").strip()
+		if not username:
 			frappe.throw("Username is required.")
 
 		try:
 			from admin_panel.api.graphql_client import GraphQLClient
 
-			account = GraphQLClient().get_account_by_username(self.username)
+			account = GraphQLClient().get_account_by_username(username)
 		except Exception:
 			frappe.log_error(
 				title="Fee Discount: flash username check failed",
@@ -61,23 +76,22 @@ class FeeDiscount(Document):
 			)
 			frappe.msgprint(
 				msg=(
-					f"Could not verify username '{self.username}' against flash "
+					f"Could not verify username '{username}' against flash "
 					"(API unreachable or not configured). Saving anyway — "
 					"double-check the spelling, or the discount will silently never apply."
 				),
 				title="Username not verified",
 				indicator="orange",
 			)
-			return
+			return username
 
 		if not account:
 			frappe.throw(
-				f"No flash account found with username '{self.username}'. "
+				f"No flash account found with username '{username}'. "
 				"Discounts are matched against the flash username exactly "
 				"(case-sensitive), so an unknown username would save cleanly "
 				"and silently never apply."
 			)
 
 		canonical = (account.get("username") or "").strip()
-		if canonical:
-			self.username = canonical
+		return canonical or username
