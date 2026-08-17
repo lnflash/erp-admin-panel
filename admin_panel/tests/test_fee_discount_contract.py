@@ -117,6 +117,11 @@ def test_verification_state_is_persisted_on_the_row_not_just_toasted():
 	assert fields["verified"]["in_standard_filter"] == 1
 	assert "verified" in doctype["field_order"]
 
+	# ...and the description has to name the path that actually clears it. The
+	# original "filter on this to re-check them" pointed at nothing: there was
+	# no re-check anywhere, so the flag was permanent once set.
+	assert "re-save" in fields["verified"]["description"]
+
 	# The username is mutable on the flash side; the uuid is not. Without it a
 	# row that went stale (user renamed themselves) is undetectable — the
 	# reader just fails open to 0% forever.
@@ -128,7 +133,8 @@ def test_verification_state_is_persisted_on_the_row_not_just_toasted():
 def test_admin_api_and_the_controller_share_one_username_shape_guard():
 	# The regex was duplicated-by-omission before: admin_api screened lookup
 	# candidates, the Fee Discount controller did not. Keep them on one
-	# implementation so a future tightening lands on both.
+	# implementation so a future tightening lands on both — and so smart search
+	# and the controller can never disagree about the same operator input.
 	api_py = (ADMIN_PANEL / "api" / "admin_api.py").read_text()
 	controller_py = (FEE_DISCOUNT_DIR / "fee_discount.py").read_text()
 
@@ -137,12 +143,21 @@ def test_admin_api_and_the_controller_share_one_username_shape_guard():
 	assert "return is_flash_username_candidate(value)" in api_py
 	assert "from admin_panel.api.flash_identifiers import is_flash_username_candidate" in controller_py
 
+	# search_account_smart kept a third, hand-rolled copy of the old regex long
+	# after the helper existed. Nothing but flash_identifiers may spell it out.
+	assert "elif is_flash_username_candidate(query):" in api_py
+	for source in (api_py, controller_py):
+		assert 'r"^[a-zA-Z0-9_-]' not in source
+
 
 @pytest.mark.parametrize(
 	"value",
-	["johnb", "jo-hn_b", "abc", "ABC123"],
+	["johnb", "abc", "ABC123", "john_b", "2fast", "josé_p", "Ω_mega", "a" * 50],
 )
 def test_shape_guard_accepts_flash_usernames(value):
+	# flash's Username scalar is /^(?!^(1|3|bc1|lnbc1))[\p{L}0-9_]{3,50}$/iu
+	# (src/domain/accounts/index.ts) — Unicode letters included, which is why
+	# "josé_p" is a username flash accepts and the guard must not refuse.
 	from admin_panel.api.flash_identifiers import is_flash_username_candidate
 
 	assert is_flash_username_candidate(value) is True
@@ -150,9 +165,29 @@ def test_shape_guard_accepts_flash_usernames(value):
 
 @pytest.mark.parametrize(
 	"value",
-	["jabari@getflash.io", "+18765550100", "ab", "john doe", "john.doe", "", None],
+	[
+		"jabari@getflash.io",
+		"+18765550100",
+		"ab",
+		"john doe",
+		"john.doe",
+		"",
+		None,
+		# flash has no hyphen in the scalar — this was accepted before.
+		"jo-hn_b",
+		# The lookahead: a username may not read as a bitcoin address or a
+		# BOLT11 invoice. All four prefixes were accepted before.
+		"3dollars",
+		"1abcdef",
+		"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+		"lnbc1pvjluezpp5qqqsyqcyq5rkwnn",
+		# flash caps at 50 characters; an over-long paste was accepted before.
+		"a" * 51,
+		# An account uuid is not a username — it belongs on the by-id path.
+		"b0f4d1e2-1111-4444-8888-aaaaaaaaaaaa",
+	],
 )
-def test_shape_guard_rejects_what_flash_would_400_on(value):
+def test_shape_guard_rejects_what_flash_would_reject(value):
 	from admin_panel.api.flash_identifiers import is_flash_username_candidate
 
 	assert is_flash_username_candidate(value) is False
@@ -378,16 +413,39 @@ def test_a_misconfigured_client_leaves_every_row_flagged_unverified(flash):
 	assert flash.lookups == [], "the client never got far enough to look anything up"
 
 
-@pytest.mark.parametrize("value", ["jabari@getflash.io", "+18765550100", "ab", "john doe"])
+@pytest.mark.parametrize(
+	"value",
+	[
+		"jabari@getflash.io",
+		"+18765550100",
+		"ab",
+		"john doe",
+		"jo-hn_b",
+		"3dollars",
+		"b0f4d1e2-1111-4444-8888-aaaaaaaaaaaa",
+	],
+)
 def test_before_insert_rejects_identifiers_that_are_not_usernames(flash, value):
-	# flash answers a non-Username scalar with an HTTP 400, not a clean "not
-	# found" — raise_for_status() would land in the fail-open branch and save
-	# the row unverified, the opposite of the loud rejection promised for a
-	# username flash does not know.
+	# Not a fail-open fix: flash answers a non-Username argument with
+	# INVALID_INPUT, which GraphQLClient already reads as "no such account", so
+	# these would be rejected either way. The guard is what makes the error say
+	# "that is not a username" — and what stops the round trip being spent.
 	doc = _make_doc(username=value)
 	with pytest.raises(_ValidationError):
 		doc.before_insert()
 	assert flash.lookups == [], "a malformed identifier must not reach flash at all"
+
+
+def test_before_insert_accepts_a_unicode_username_that_flash_accepts(flash):
+	# flash's Username scalar is Unicode ([\p{L}0-9_]{3,50}), so this is a real
+	# account. An ASCII-only shape guard refused it before flash was ever asked,
+	# which made the discount impossible to create OR rename — the only two
+	# entry points the doctype has both run through the same guard.
+	flash.account = {"username": "josé_p", "uuid": "d2d2d2d2-3333-4444-8888-cccccccccccc"}
+	doc = _make_doc(username="josé_p")
+	doc.before_insert()
+	assert flash.lookups == ["josé_p"]
+	assert (doc.username, doc.verified) == ("josé_p", 1)
 
 
 def test_validate_rejects_in_place_username_edits_on_a_saved_row(flash):
@@ -406,17 +464,81 @@ def test_validate_rejects_in_place_username_edits_on_a_saved_row(flash):
 	assert flash.lookups == []
 
 
-def test_validate_accepts_a_saved_row_whose_username_is_unchanged():
+def test_validate_accepts_a_saved_row_whose_username_is_unchanged(flash):
 	# Guards the other side of the throw above: editing the notes or the
 	# percentage on an existing row must not trip the in-place-edit rejection.
+	# An already-verified row also must not spend a flash lookup on every save.
 	doc = _make_doc(
 		username="carol",
 		discount_percent=25,
+		verified=1,
 		is_new=lambda: False,
 		has_value_changed=lambda fieldname: False,
 	)
 	doc.validate()
 	assert doc.username == "carol"
+	assert flash.lookups == []
+
+
+def _saved_unverified_doc(**attrs):
+	attrs.setdefault("username", "carol")
+	attrs.setdefault("verified", 0)
+	attrs.setdefault("is_new", lambda: False)
+	attrs.setdefault("has_value_changed", lambda fieldname: False)
+	return _make_doc(**attrs)
+
+
+def test_saving_an_unverified_row_re_checks_it_against_flash(flash):
+	# verified=0 is the durable signal that the check never ran (rotated
+	# admin_api_key, flash down). It needs a clearing path or it degrades into
+	# noise: before_insert only fires on create, Frappe refuses a
+	# rename-to-itself, and no scheduler event is enabled — so re-saving the
+	# row has to be the re-check the field description promises.
+	flash.account = {"username": "carol", "uuid": "e3e3e3e3-4444-4444-8888-dddddddddddd"}
+	doc = _saved_unverified_doc(account_uuid=None)
+	doc.validate()
+	assert flash.lookups == ["carol"]
+	assert doc.verified == 1
+	assert doc.account_uuid == "e3e3e3e3-4444-4444-8888-dddddddddddd"
+
+
+def test_re_checking_while_flash_is_still_down_leaves_the_row_saveable(flash, frappe_runtime):
+	# The re-check must not turn a flash outage into "you cannot edit this row
+	# at all" — the outage rule is the same as on create: warn, save, stay 0.
+	flash.error = RuntimeError("flash is down")
+	doc = _saved_unverified_doc(discount_percent=25)
+	doc.validate()
+	assert doc.verified == 0
+	assert frappe_runtime.messages, "operator must see a could-not-verify warning"
+
+
+def test_the_re_check_never_rewrites_the_username_of_a_saved_row(flash):
+	# _sync_autoname_field reverts the field to the document name on save, so
+	# adopting flash's canonical spelling here would be a no-op at best and a
+	# misleading in-memory diff at worst. Only the verification state moves.
+	flash.account = {"username": "carol", "uuid": "e3e3e3e3-4444-4444-8888-dddddddddddd"}
+	doc = _saved_unverified_doc(username="Carol")
+	doc.validate()
+	assert doc.username == "Carol"
+	assert doc.verified == 1
+
+
+def test_the_re_check_rejects_a_row_whose_username_flash_does_not_know(flash):
+	# The row saved unverified during an outage; now flash is up and says the
+	# username does not exist. That row would silently never discount, which is
+	# exactly what create refuses — the re-check has to refuse it too.
+	flash.account = None
+	doc = _saved_unverified_doc(username="jhonb")
+	with pytest.raises(_ValidationError):
+		doc.validate()
+	assert flash.lookups == ["jhonb"]
+
+
+def test_a_row_that_fails_the_local_checks_never_costs_a_flash_lookup(flash):
+	doc = _saved_unverified_doc(discount_percent=250)
+	with pytest.raises(_ValidationError):
+		doc.validate()
+	assert flash.lookups == []
 
 
 # ---------------------------------------------------------------------------
@@ -459,12 +581,32 @@ def test_before_rename_flash_outage_warns_but_allows_the_rename(flash, frappe_ru
 	assert frappe_runtime.messages, "operator must see a could-not-verify warning"
 
 
-@pytest.mark.parametrize("value", ["jabari@getflash.io", "+18765550100", "ab", "john doe"])
+@pytest.mark.parametrize(
+	"value",
+	[
+		"jabari@getflash.io",
+		"+18765550100",
+		"ab",
+		"john doe",
+		"jo-hn_b",
+		"3dollars",
+		"b0f4d1e2-1111-4444-8888-aaaaaaaaaaaa",
+	],
+)
 def test_before_rename_rejects_identifiers_that_are_not_usernames(flash, value):
 	doc = _make_doc(username="johnb")
 	with pytest.raises(_ValidationError):
 		doc.before_rename("johnb", value)
 	assert flash.lookups == []
+
+
+def test_before_rename_accepts_a_unicode_username_that_flash_accepts(flash):
+	# The other half of the ASCII-only-guard regression: with the rename path
+	# blocked too, an existing row could never be moved to this user either.
+	flash.account = {"username": "josé_p"}
+	doc = _make_doc(username="johnb")
+	assert doc.before_rename("johnb", "josé_p") == {"new": "josé_p"}
+	assert flash.lookups == ["josé_p"]
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +641,19 @@ def test_after_rename_without_a_matching_before_rename_leaves_the_row_alone(flas
 	# left over from some earlier call must not be stamped onto this row.
 	doc = _make_doc(username="johnb")
 	doc.after_rename("johnb", "johnb2")
+	assert doc.db_set_calls == []
+
+
+def test_after_rename_ignores_a_resolution_left_by_a_different_rename(flash):
+	# The other half of the guard: frappe.model.rename_doc.bulk_rename loops
+	# rename_doc in one process, and a resolution left behind by a rename that
+	# validate_rename then rejected is never popped. Matching on the resolved
+	# username is what stops one row's verification state being stamped onto
+	# the next row in the batch.
+	flash.account = {"username": "johnb2", "uuid": "c1c1c1c1-2222-4444-8888-bbbbbbbbbbbb"}
+	doc = _make_doc(username="johnb")
+	doc.before_rename("johnb", "johnb2")
+	doc.after_rename("carol", "carol2")
 	assert doc.db_set_calls == []
 
 

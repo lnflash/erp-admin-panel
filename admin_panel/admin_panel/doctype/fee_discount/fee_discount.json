@@ -74,7 +74,7 @@
   },
   {
    "default": "0",
-   "description": "Set automatically: 1 once flash confirmed the username exists, 0 when the check could not run (flash unreachable or not configured). Unverified rows may silently never discount — filter on this to re-check them.",
+   "description": "Set automatically: 1 once flash confirmed the username exists, 0 when the check could not run (flash unreachable or not configured). Unverified rows may silently never discount — filter on this, then re-save each row to re-run the check: it flips to 1 if flash now knows the username, stays 0 if flash is still unreachable, and the save is rejected outright if the username is wrong.",
    "fieldname": "verified",
    "fieldtype": "Check",
    "in_list_view": 1,

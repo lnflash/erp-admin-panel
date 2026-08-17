@@ -53,6 +53,21 @@ class FeeDiscount(Document):
 				"(Card Top-Ups and/or Bank Cashouts) — uncheck Active to suspend it instead."
 			)
 
+		# Re-run the check on a row that went in unverified, so verified=0 has
+		# a clearing path instead of decaying into noise the first time it
+		# fires in bulk. Nothing else can clear it: before_insert only fires on
+		# create, rename-to-itself is refused outright (frappe/model/
+		# rename_doc.py — `if old == new: frappe.throw`), and no scheduler
+		# event is enabled. Without this, a rotated admin_api_key strands every
+		# row created while it was broken and delete-and-recreate is the only
+		# exit. The username is provably unchanged here (the throw above
+		# guarantees it), so re-resolving is idempotent and re-saving the row
+		# IS the re-check the field description points at. Last in validate()
+		# on purpose: a row that fails the cheap local checks should not cost a
+		# round trip to flash.
+		if not self.is_new() and not self.verified:
+			self._recheck_flash_verification()
+
 	def before_rename(self, old, new, merge=False):
 		# The Rename dialog is the documented path for changing the username
 		# (set_only_once blocks direct edits, and the field description points
@@ -91,6 +106,19 @@ class FeeDiscount(Document):
 		self.verified = resolution["verified"]
 		self.account_uuid = resolution["account_uuid"]
 
+	def _recheck_flash_verification(self):
+		"""Re-resolve a saved row that had gone in unverified.
+
+		Only ``verified`` / ``account_uuid`` are written back. The username
+		cannot move on this path — _sync_autoname_field reverts the field to
+		the document name on save — so adopting flash's canonical spelling
+		here would be a no-op at best and a misleading in-memory diff at
+		worst; the Rename dialog is what actually re-keys the row.
+		"""
+		resolution = self._resolve_flash_username(self.username)
+		self.verified = resolution["verified"]
+		self.account_uuid = resolution["account_uuid"]
+
 	def _resolve_flash_username(self, username):
 		"""Resolve a username against flash.
 
@@ -110,16 +138,21 @@ class FeeDiscount(Document):
 		if not username:
 			frappe.throw("Username is required.")
 
-		# Screen the shape before spending a lookup: flash rejects anything
-		# that is not a Username scalar with an HTTP 400, which lands in the
-		# except branch below and saves the row unverified — the opposite of
-		# the loud rejection an operator who pasted an email or a phone
-		# number needs to see.
+		# Screen the shape before spending a lookup. This is not what keeps a
+		# malformed identifier out: flash answers a non-Username argument with
+		# an INVALID_INPUT error, which GraphQLClient._is_not_found_error
+		# (graphql_client.py:80) already reads as "no such account", so the
+		# lookup returns None and the throw at the bottom fires anyway. What
+		# the guard buys is one saved round trip and a precise error string —
+		# the operator who pasted an email, a phone number or an account uuid
+		# is told it is not a username, not that flash has no such account.
 		if not is_flash_username_candidate(username):
 			frappe.throw(
-				f"'{username}' is not a valid flash username. Usernames are at least "
-				"3 characters of letters, digits, underscore or hyphen — an email "
-				"address, a phone number or a display name is not a username."
+				f"'{username}' is not a valid flash username. Usernames are 3 to 50 "
+				"characters of letters, digits or underscore — no hyphens, dots or "
+				"spaces, and never starting with 1, 3, bc1 or lnbc1. An email "
+				"address, a phone number, an account uuid or a display name is not "
+				"a username."
 			)
 
 		try:
