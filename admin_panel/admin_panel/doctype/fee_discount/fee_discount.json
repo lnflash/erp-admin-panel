@@ -74,7 +74,7 @@
   },
   {
    "default": "0",
-   "description": "Set automatically: 1 once flash confirmed the username exists, 0 when the check could not run (flash unreachable or not configured). Unverified rows may silently never discount — filter on this, then re-save each row to re-run the check: it flips to 1 if flash now knows the username, stays 0 if flash is still unreachable, and the save is rejected outright if the username is wrong.",
+   "description": "Set automatically: 1 once flash confirmed the username exists, 0 when the check could not run (flash unreachable or not configured). Unverified rows may silently never discount — filter on this, then open a row, change a field (Desk skips the save entirely on an untouched doc) and save to re-run the check: it flips to 1 if flash now knows the username, and stays 0 — with a warning, never a rejected save — if flash is still unreachable or still does not know it. Fix a wrong username via the Rename dialog.",
    "fieldname": "verified",
    "fieldtype": "Check",
    "in_list_view": 1,

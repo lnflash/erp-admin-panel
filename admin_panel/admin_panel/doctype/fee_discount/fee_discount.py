@@ -114,12 +114,22 @@ class FeeDiscount(Document):
 		the document name on save — so adopting flash's canonical spelling
 		here would be a no-op at best and a misleading in-memory diff at
 		worst; the Rename dialog is what actually re-keys the row.
+
+		Non-strict on purpose: an unknown username warns and leaves
+		verified=0 instead of throwing. Throwing here would reject the save
+		over a field the operator never touched and make a bad row
+		impossible to SUSPEND — unchecking Active (the documented way to
+		neutralize a row without deleting it) would hit the re-check and
+		fail on exactly the rows that need it most. The row is already
+		harmless: flash fails open to a 0% discount for a username it does
+		not know. Creation and rename stay strict, so a typo can never
+		enter or move this way.
 		"""
-		resolution = self._resolve_flash_username(self.username)
+		resolution = self._resolve_flash_username(self.username, strict=False)
 		self.verified = resolution["verified"]
 		self.account_uuid = resolution["account_uuid"]
 
-	def _resolve_flash_username(self, username):
+	def _resolve_flash_username(self, username, strict=True):
 		"""Resolve a username against flash.
 
 		Returns ``{"username", "verified", "account_uuid"}``.
@@ -133,6 +143,13 @@ class FeeDiscount(Document):
 		uuid; flash unreachable → warn and return the trimmed input with
 		verified=0, so a flash outage never bricks the admin panel but the
 		unchecked row stays visible instead of evaporating with the toast.
+
+		``strict=False`` downgrades the unknown-username throw to the same
+		warn-and-flag treatment as an outage — see
+		_recheck_flash_verification for why the update path must never
+		block a save. A blank or malformed username still throws in both
+		modes: those are operator input errors on a field being set, not
+		verdicts about flash's state.
 		"""
 		username = (username or "").strip()
 		if not username:
@@ -183,6 +200,18 @@ class FeeDiscount(Document):
 			return {"username": username, "verified": 0, "account_uuid": None}
 
 		if not account:
+			if not strict:
+				frappe.msgprint(
+					msg=(
+						f"Flash still has no account named '{username}'. Saving "
+						"anyway, left at Verified Against Flash = No — this row "
+						"will never discount until the username is corrected via "
+						"the Rename dialog."
+					),
+					title="Username not verified",
+					indicator="orange",
+				)
+				return {"username": username, "verified": 0, "account_uuid": None}
 			frappe.throw(
 				f"No flash account found with username '{username}'. "
 				"An unknown username would save cleanly and silently never "

@@ -119,8 +119,14 @@ def test_verification_state_is_persisted_on_the_row_not_just_toasted():
 
 	# ...and the description has to name the path that actually clears it. The
 	# original "filter on this to re-check them" pointed at nothing: there was
-	# no re-check anywhere, so the flag was permanent once set.
-	assert "re-save" in fields["verified"]["description"]
+	# no re-check anywhere, so the flag was permanent once set. The successor
+	# ("re-save each row") pointed at something Desk refuses to do — save.js
+	# skips the server call entirely on an untouched doc and answers "No
+	# changes in document" — so the instruction must name the dirtying step
+	# too, or the operator concludes the re-check is broken.
+	description = fields["verified"]["description"]
+	assert "change a field" in description
+	assert "save" in description
 
 	# The username is mutable on the flash side; the uuid is not. Without it a
 	# row that went stale (user renamed themselves) is undetectable — the
@@ -523,15 +529,29 @@ def test_the_re_check_never_rewrites_the_username_of_a_saved_row(flash):
 	assert doc.verified == 1
 
 
-def test_the_re_check_rejects_a_row_whose_username_flash_does_not_know(flash):
+def test_the_re_check_warns_but_saves_a_row_flash_does_not_know(flash, frappe_runtime):
 	# The row saved unverified during an outage; now flash is up and says the
-	# username does not exist. That row would silently never discount, which is
-	# exactly what create refuses — the re-check has to refuse it too.
+	# username does not exist. The re-check must NOT throw: it would reject a
+	# save over a field the operator never touched and make the row impossible
+	# to suspend — unchecking Active would hit this very check. The row is
+	# already harmless (flash fails open to 0% for an unknown username), so
+	# warn, leave verified=0, and let the save through.
 	flash.account = None
 	doc = _saved_unverified_doc(username="jhonb")
-	with pytest.raises(_ValidationError):
-		doc.validate()
+	doc.validate()
+	assert doc.verified == 0
+	assert doc.account_uuid is None
 	assert flash.lookups == ["jhonb"]
+	assert frappe_runtime.messages, "operator must see a still-not-verified warning"
+
+
+def test_an_unverified_row_can_still_be_suspended_while_flash_denies_it(flash):
+	# The documented escape hatch: "Uncheck to suspend the discount without
+	# deleting the row" must work on exactly the rows that need suspending.
+	flash.account = None
+	doc = _saved_unverified_doc(username="jhonb", active=0)
+	doc.validate()
+	assert doc.active == 0
 
 
 def test_a_row_that_fails_the_local_checks_never_costs_a_flash_lookup(flash):
