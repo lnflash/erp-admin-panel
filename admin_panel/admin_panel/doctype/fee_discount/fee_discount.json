@@ -13,6 +13,9 @@
   "column_break_flows",
   "applies_to_topup",
   "applies_to_cashout",
+  "flash_verification_section",
+  "verified",
+  "account_uuid",
   "notes_section",
   "notes"
  ],
@@ -63,6 +66,28 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Applies to Bank Cashouts"
+  },
+  {
+   "fieldname": "flash_verification_section",
+   "fieldtype": "Section Break",
+   "label": "Flash Verification"
+  },
+  {
+   "default": "0",
+   "description": "Set automatically: 1 once flash confirmed the username exists, 0 when the check could not run (flash unreachable or not configured). Unverified rows may silently never discount — filter on this to re-check them.",
+   "fieldname": "verified",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Verified Against Flash",
+   "read_only": 1
+  },
+  {
+   "description": "Set automatically from the flash account found at verification time. The username is mutable on the flash side; this is not — it is what makes a stale row detectable in one query.",
+   "fieldname": "account_uuid",
+   "fieldtype": "Data",
+   "label": "Flash Account UUID",
+   "read_only": 1
   },
   {
    "fieldname": "notes_section",

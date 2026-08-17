@@ -6,6 +6,7 @@ import requests as requests_lib
 
 from .auth import audit_log, require_admin, require_financial, require_roles
 from .common import handle_api_errors
+from .flash_identifiers import is_flash_username_candidate
 from .fygaro_topup_core import rejection_reason
 from .graphql_client import GraphQLClient, GraphQLError
 from .transfer_identity_core import (
@@ -1185,7 +1186,10 @@ def _cashout_notification_amount_cents(doc):
 
 
 def _is_flash_username_candidate(value):
-	return bool(value and re.match(r"^[a-zA-Z0-9_-]{3,}$", str(value).strip()))
+	# The regex itself now lives in flash_identifiers so the Fee Discount
+	# controller screens operator-typed usernames through the same guard;
+	# keeping this module-local name leaves the call sites below unchanged.
+	return is_flash_username_candidate(value)
 
 
 def _first_cashout_account_match(client, doc):

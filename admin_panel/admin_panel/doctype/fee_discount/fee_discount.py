@@ -1,6 +1,17 @@
 import frappe
 from frappe.model.document import Document
 
+from admin_panel.api.flash_identifiers import is_flash_username_candidate
+
+# before_rename resolves the new username against flash, but rename_doc throws
+# the resolution away: it never saves the doc that before_rename ran on, and
+# after_rename receives a freshly fetched document instead. The verification
+# state is handed between the two hooks through this request-local flag so it
+# is persisted only once the rename has actually landed — writing it from
+# before_rename would stamp the row even when validate_rename then rejects the
+# new name (e.g. a row for that username already exists).
+_RENAME_RESOLUTION_FLAG = "fee_discount_rename_resolution"
+
 
 class FeeDiscount(Document):
 	def before_insert(self):
@@ -51,27 +62,65 @@ class FeeDiscount(Document):
 		# flash reader would fail open to a 0% discount. Same resolution as
 		# create: unknown username → block the rename; found → rename to
 		# flash's canonical spelling (rename_doc honors the returned "new"
-		# override); flash unreachable → warn but allow.
-		return {"new": self._resolve_flash_username(new)}
+		# override); flash unreachable → warn but allow, flagged unverified.
+		resolution = self._resolve_flash_username(new)
+		frappe.flags[_RENAME_RESOLUTION_FLAG] = resolution
+		return {"new": resolution["username"]}
+
+	def after_rename(self, old, new, merge=False):
+		# The rename landed; persist what before_rename learned. A rename can
+		# move the discount to a different person, so a carried-over
+		# account_uuid / verified flag from the previous occupant would be
+		# worse than none — _resolve_flash_username always returns both.
+		resolution = frappe.flags.pop(_RENAME_RESOLUTION_FLAG, None)
+		if not resolution or resolution.get("username") != new:
+			# Not our resolution (rename_doc(validate=False) skips
+			# before_rename entirely) — leave the row's flags alone.
+			return
+		self.db_set(
+			{
+				"verified": resolution["verified"],
+				"account_uuid": resolution["account_uuid"],
+			},
+			update_modified=False,
+		)
 
 	def _sync_username_with_flash(self):
-		self.username = self._resolve_flash_username(self.username)
+		resolution = self._resolve_flash_username(self.username)
+		self.username = resolution["username"]
+		self.verified = resolution["verified"]
+		self.account_uuid = resolution["account_uuid"]
 
 	def _resolve_flash_username(self, username):
-		"""Resolve a username against flash and return its canonical form.
+		"""Resolve a username against flash.
+
+		Returns ``{"username", "verified", "account_uuid"}``.
 
 		The flash reader matches case-insensitively (both sides lowercased)
 		but fails open to a 0% discount for unknown usernames — a typo'd
 		entry would save cleanly and silently never discount, which is why
 		existence is verified here. Unknown username → block the save;
 		found → return flash's canonical spelling (keeps the row name
-		matching what the admin pages display); flash unreachable → warn
-		but return the trimmed input, so a flash outage never bricks the
-		admin panel.
+		matching what the admin pages display) plus the account's immutable
+		uuid; flash unreachable → warn and return the trimmed input with
+		verified=0, so a flash outage never bricks the admin panel but the
+		unchecked row stays visible instead of evaporating with the toast.
 		"""
 		username = (username or "").strip()
 		if not username:
 			frappe.throw("Username is required.")
+
+		# Screen the shape before spending a lookup: flash rejects anything
+		# that is not a Username scalar with an HTTP 400, which lands in the
+		# except branch below and saves the row unverified — the opposite of
+		# the loud rejection an operator who pasted an email or a phone
+		# number needs to see.
+		if not is_flash_username_candidate(username):
+			frappe.throw(
+				f"'{username}' is not a valid flash username. Usernames are at least "
+				"3 characters of letters, digits, underscore or hyphen — an email "
+				"address, a phone number or a display name is not a username."
+			)
 
 		try:
 			from admin_panel.api.graphql_client import GraphQLClient
@@ -82,16 +131,23 @@ class FeeDiscount(Document):
 				title="Fee Discount: flash username check failed",
 				message=frappe.get_traceback(),
 			)
+			# A toast is not a record: it is invisible to REST callers (it
+			# arrives in _server_messages, which scripts do not read) and gone
+			# the moment it is dismissed. The durable signal is verified=0 on
+			# the row, so a misconfigured API key — which fails every check
+			# from then on, not just this one — shows up in the list view
+			# instead of being rediscovered through a customer complaint.
 			frappe.msgprint(
 				msg=(
 					f"Could not verify username '{username}' against flash "
-					"(API unreachable or not configured). Saving anyway — "
-					"double-check the spelling, or the discount will silently never apply."
+					"(API unreachable or not configured). Saving anyway, flagged "
+					"Verified Against Flash = No — double-check the spelling, or "
+					"the discount will silently never apply."
 				),
 				title="Username not verified",
 				indicator="orange",
 			)
-			return username
+			return {"username": username, "verified": 0, "account_uuid": None}
 
 		if not account:
 			frappe.throw(
@@ -102,4 +158,8 @@ class FeeDiscount(Document):
 			)
 
 		canonical = (account.get("username") or "").strip()
-		return canonical or username
+		return {
+			"username": canonical or username,
+			"verified": 1,
+			"account_uuid": account.get("uuid"),
+		}
