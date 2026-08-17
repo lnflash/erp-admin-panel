@@ -6,6 +6,7 @@ import requests as requests_lib
 
 from .auth import audit_log, require_admin, require_financial, require_roles
 from .common import handle_api_errors
+from .flash_identifiers import is_flash_username_candidate
 from .fygaro_topup_core import rejection_reason
 from .graphql_client import GraphQLClient, GraphQLError
 from .transfer_identity_core import (
@@ -558,7 +559,12 @@ def search_account_smart(query):
 			account = client.get_account_by_phone(query)
 		elif "@" in query:
 			account = client.get_account_by_email(query)
-		elif re.match(r"^[a-zA-Z0-9_-]{3,}$", query):
+		# One shared shape guard (see flash_identifiers) — a local copy of the
+		# regex here would drift from the Fee Discount controller's, and the
+		# two would then disagree about the same operator input. Account uuids
+		# are not username-shaped, so they fall through to the by-id branch
+		# below, which is where the None fallback was already sending them.
+		elif is_flash_username_candidate(query):
 			account = client.get_account_by_username(query)
 			if account is None:
 				account = client.get_account_by_id(query)
@@ -1185,7 +1191,10 @@ def _cashout_notification_amount_cents(doc):
 
 
 def _is_flash_username_candidate(value):
-	return bool(value and re.match(r"^[a-zA-Z0-9_-]{3,}$", str(value).strip()))
+	# The regex itself now lives in flash_identifiers so the Fee Discount
+	# controller screens operator-typed usernames through the same guard;
+	# keeping this module-local name leaves the call sites below unchanged.
+	return is_flash_username_candidate(value)
 
 
 def _first_cashout_account_match(client, doc):
