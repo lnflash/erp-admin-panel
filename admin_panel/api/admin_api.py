@@ -46,26 +46,101 @@ def update_account_level(uid, level, erp_party=None):
 	return client.update_account_level(uid, level, erp_party=erp_party)
 
 
+# Columns the Sent Alerts History panel renders, in doctype field order.
+# target_username is dropped when the table has not gained it — see
+# get_user_alerts.
+ALERT_HISTORY_FIELDS = ("title", "message", "tag", "target_username", "sent_by", "sent_on")
+
+
 @frappe.whitelist()
+@require_admin()
 @handle_api_errors
 def get_user_alerts(limit=10):
-	"""Return latest User Alerts"""
+	"""Return latest User Alerts.
+
+	Admin-gated on purpose: frappe.get_all is get_list with
+	ignore_permissions=True, so it reads straight past the doctype's
+	System Manager-only read permission. DIRECT rows name the customer who was
+	privately messaged and quote what support said to them, so leaving this
+	open to any authenticated Frappe user would hand every Employee /
+	Website Manager login the support transcript.
+
+	target_username only exists once ``bench migrate`` has reloaded the
+	doctype. The erpnext chart's migrate Job carries no helm hook (chart 8.0.0,
+	templates/job-migrate-site.yaml), so it is created alongside the deployment
+	rollout rather than ahead of it — a fresh pod can serve this endpoint
+	against a table that has not gained the column yet. Selecting it
+	unconditionally would 500 the whole panel, broadcast rows included, for the
+	length of the migrate.
+
+	The drop is reported as data rather than absorbed: with the column gone,
+	*every* row comes back with no target, and a page that silently renders that
+	as "to all users" would relabel a private message to one customer as a
+	broadcast to every Flash user. ``target_username_available`` lets the page
+	say "recipient unavailable" instead of asserting an audience it cannot
+	know. (send_user_alert refuses to send at all in this window, so no new
+	DIRECT row can be created without its target.)
+	"""
+	fields = list(ALERT_HISTORY_FIELDS)
+	target_username_available = frappe.db.has_column("User Alerts", "target_username")
+	if not target_username_available:
+		fields.remove("target_username")
+
 	logs = frappe.get_all(
 		"User Alerts",
-		fields=["title", "message", "tag", "sent_by", "sent_on"],
+		fields=fields,
 		order_by="sent_on desc",
 		limit_page_length=int(limit),
 	)
-	return {"logs": logs}
+	return {"logs": logs, "target_username_available": target_username_available}
 
 
 @frappe.whitelist()
+@require_admin()
 @handle_api_errors
 def get_alert_types():
-	"""Fetch available notification topics from Flash API"""
+	"""Fetch available notification topics from Flash API.
+
+	Admin-gated for the same reason as its siblings on this page: the Page doc
+	carries ``"roles": []`` (alert_users.json), which in Frappe means
+	``Page.is_permitted()`` short-circuits to True, so /app/alert-users opens for
+	every logged-in user. Left open, an Employee or Website Manager login could
+	make the panel mint an admin JWT and run Flash's ``notificationTopics``
+	admin query on their behalf, unthrottled.
+	"""
 	client = GraphQLClient()
 	topics = client.get_notification_topics()
 	return {"topics": topics}
+
+
+# The audit row for a delivered push failed to write. Same wording for both
+# endpoints: the page renders it verbatim (alert_users.js), and the instruction
+# that matters — do not resend — is identical for one customer and for all of them.
+UNAUDITED_SEND_WARNING = "Sent, but the audit row failed to write — do not resend."
+
+
+def _record_unauditable_send(summary, detail):
+	"""Persist a delivered-but-unaudited push where a pod restart cannot erase it.
+
+	``frappe.logger()`` writes to ``sites/<site>/logs/*.log`` *inside the pod*,
+	and this app ships as a container on a chart whose pods roll on every
+	deploy — so the only remaining record of who received what is gone at the
+	next release. An Error Log row lives in the database and survives the
+	rollout. The likeliest trigger for these branches is a doctype validation
+	failure (a reqd field the send-time guards did not anticipate), not a DB
+	outage, so this write normally lands.
+
+	Guarded on purpose: when the audit insert failed *because* the database is
+	gone, an unguarded log_error raises inside the caller's ``except`` block,
+	escapes to handle_api_errors, and turns a delivered push back into a 500 —
+	which is exactly what makes the operator hit Send again on a push that
+	already went out. A best-effort durable record must never be able to cause
+	the bug its callers exist to prevent.
+	"""
+	try:
+		frappe.log_error(f"{frappe.get_traceback()}\n\n{detail}", summary)
+	except Exception:
+		pass
 
 
 @frappe.whitelist()
@@ -73,6 +148,7 @@ def get_alert_types():
 @handle_api_errors
 def send_alert(alert_type, title, message):
 	"""Send push notification via Flash sendNotification API"""
+	# Before str(): str(None) is "None", which clears every check below.
 	if not title or not message or not alert_type:
 		frappe.response["http_status_code"] = 400
 		return {"success": False, "error": "Alert type, title, and message are required"}
@@ -81,6 +157,16 @@ def send_alert(alert_type, title, message):
 	title = str(title).strip()
 	message = str(message).strip()
 	alert_type = str(alert_type).strip()
+	# Re-check emptiness AFTER stripping, not only before: whitespace is truthy,
+	# so "   " clears the guard above and arrives here as "". A blank title would
+	# otherwise broadcast an unrecallable empty push to every Flash user and then
+	# fail the doctype's reqd insert — which the audit try/except below reports
+	# as a *successful* send, leaving the broadcast permanently unauditable.
+	# Separate from the length error so a blank value is not reported as a
+	# "length limits" violation.
+	if not title or not message or not alert_type:
+		frappe.response["http_status_code"] = 400
+		return {"success": False, "error": "Alert type, title, and message are required"}
 	if len(title) > 140 or len(message) > 1000 or len(alert_type) > 64:
 		frappe.response["http_status_code"] = 400
 		return {
@@ -101,19 +187,159 @@ def send_alert(alert_type, title, message):
 		frappe.response["http_status_code"] = 500
 		return {"success": False, "error": "Failed to send notification"}
 
-	frappe.get_doc(
-		{
-			"doctype": "User Alerts",
-			"title": title,
-			"message": message,
-			"tag": alert_type,
-			"sent_by": frappe.session.user,
-			"sent_on": frappe.utils.now_datetime(),
+	# Same contract as the single-user sibling below, and for a bigger blast
+	# radius: the broadcast has already fanned out to every Flash user and cannot
+	# be recalled, so an audit-write failure must never be reported as a failed
+	# send. Unguarded, this insert is a live hazard rather than a theoretical one
+	# — this PR's own DDL adds target_username to `tabUser Alerts`, and the
+	# migrate Job carries no helm hook (see get_user_alerts), so a serving pod's
+	# INSERT can land inside the ALTER's metadata lock and time out. The raised
+	# ValidationError goes straight through handle_api_errors, or a DB error
+	# becomes a 500; either way the page keeps the form intact, the operator
+	# clicks Send again, and every Flash user gets the same push twice.
+	try:
+		frappe.get_doc(
+			{
+				"doctype": "User Alerts",
+				"title": title,
+				"message": message,
+				"tag": alert_type,
+				"sent_by": frappe.session.user,
+				"sent_on": frappe.utils.now_datetime(),
+			}
+		).insert(ignore_permissions=True)
+		frappe.db.commit()
+	except Exception as exc:
+		detail = (
+			f"BROADCAST alert was DELIVERED to topic {alert_type!r} ({title!r}) but "
+			f"the audit row failed to write: {exc}"
+		)
+		frappe.logger().error(detail)
+		_record_unauditable_send(
+			f"Broadcast alert delivered to {alert_type} but the audit row failed",
+			f"{detail}\nmessage: {message!r}",
+		)
+		return {
+			"success": True,
+			"message": f"Notification sent successfully: {title}",
+			"warning": UNAUDITED_SEND_WARNING,
 		}
-	).insert(ignore_permissions=True)
-	frappe.db.commit()
 
 	return {"success": True, "message": f"Notification sent successfully: {title}"}
+
+
+@frappe.whitelist()
+@require_admin()
+@handle_api_errors
+def send_user_alert(username, title, message):
+	"""Send push notification to a single user via Flash userNotificationSend API"""
+	# Before str(): str(None) is "None", which clears every check below.
+	if not username or not title or not message:
+		frappe.response["http_status_code"] = 400
+		return {"success": False, "error": "Username, title, and message are required"}
+
+	# Bound input lengths to avoid oversized/abusive push payloads. Strip again
+	# after the @ comes off: "@ alice" (pasted out of a chat window) would
+	# otherwise normalise to " alice", and since is_flash_username_candidate
+	# strips internally before matching, the value validated below would not be
+	# the value sent — flash would reject the leading space as INVALID_INPUT and
+	# the operator would get an opaque 500 instead of a usable error.
+	username = str(username).strip().lstrip("@").strip()
+	title = str(title).strip()
+	message = str(message).strip()
+	# Re-check emptiness AFTER stripping, not only before: whitespace is truthy,
+	# so ("   ", "   ", "   ") clears the guard above and arrives here as three
+	# empty strings. A blank title would deliver an unrecallable empty push to a
+	# real customer and then fail the doctype's reqd insert — which the audit
+	# try/except below reports as a *successful* send, permanently unauditable.
+	# That is exactly what the 503 guard further down exists to prevent.
+	if not username or not title or not message:
+		frappe.response["http_status_code"] = 400
+		return {"success": False, "error": "Username, title, and message are required"}
+	if len(username) > 50 or len(title) > 140 or len(message) > 1000:
+		frappe.response["http_status_code"] = 400
+		return {
+			"success": False,
+			"error": "Alert exceeds length limits (username<=50, title<=140, message<=1000)",
+		}
+
+	# Screen the identifier before spending a flash round trip on it. A pasted
+	# phone number, email or account UUID — or a 2-character string, which the
+	# Username scalar's 3-char minimum rejects — comes back from flash as a
+	# generic "Invalid username"; say what is actually wrong instead. Emptiness
+	# and bounds first, so a blank or over-long value reports the rule it broke
+	# rather than the generic shape error.
+	if not is_flash_username_candidate(username):
+		frappe.response["http_status_code"] = 400
+		return {"success": False, "error": "Not a Flash username"}
+
+	# Fail closed while the audit column is missing. target_username only exists
+	# once ``bench migrate`` has reloaded the doctype (see get_user_alerts for
+	# why a pod can serve requests before that lands), and frappe builds the
+	# INSERT from meta.get_valid_columns() — so in that window the key below is
+	# dropped as silently as the SELECT drops it, and the DIRECT row records a
+	# private message to one customer as a broadcast to every Flash user,
+	# permanently, since the row itself lost the target. The audit trail is this
+	# feature's whole justification: no personal push goes out that cannot be
+	# audited. The operator retries once the migrate finishes.
+	if not frappe.db.has_column("User Alerts", "target_username"):
+		frappe.response["http_status_code"] = 503
+		return {"success": False, "error": "User Alerts is mid-migration — retry shortly"}
+
+	client = GraphQLClient()
+	result = client.send_user_alert(username, title, message)
+
+	if result.get("errors"):
+		error_messages = [err.get("message", "Unknown error") for err in result["errors"]]
+		frappe.logger().error(f"Send user alert errors: {error_messages}")
+		frappe.response["http_status_code"] = 400
+		return {"success": False, "errors": error_messages}
+
+	if not result.get("success"):
+		frappe.response["http_status_code"] = 500
+		return {"success": False, "error": "Failed to send notification"}
+
+	# The push is already delivered by this point and cannot be recalled, so an
+	# audit-write failure must never be reported as a failed send. Unguarded,
+	# handle_api_errors would turn a DB blip into a 500 "internal error"; the
+	# page keeps the form intact on failure, so the operator clicks Send again
+	# and the customer receives the same personal push twice — with no row
+	# recorded for either. Report the delivery, and make the missing audit row
+	# loud in the operator's response, in the pod log, and — because that log dies
+	# with the pod — in a durable Error Log row.
+	try:
+		frappe.get_doc(
+			{
+				"doctype": "User Alerts",
+				"title": title,
+				"message": message,
+				"tag": "DIRECT",
+				"target_username": username,
+				"sent_by": frappe.session.user,
+				"sent_on": frappe.utils.now_datetime(),
+			}
+		).insert(ignore_permissions=True)
+		frappe.db.commit()
+	except Exception as exc:
+		detail = (
+			f"DIRECT alert was DELIVERED to @{username} ({title!r}) but the audit "
+			f"row failed to write: {exc}"
+		)
+		frappe.logger().error(detail)
+		# The pod log is erased by the next deploy; this is the record that has
+		# to outlive it, since with the row missing it is all that says which
+		# customer was privately messaged and what was said.
+		_record_unauditable_send(
+			f"DIRECT alert delivered to @{username} but the audit row failed",
+			f"{detail}\nmessage: {message!r}",
+		)
+		return {
+			"success": True,
+			"message": f"Notification sent to @{username}: {title}",
+			"warning": UNAUDITED_SEND_WARNING,
+		}
+
+	return {"success": True, "message": f"Notification sent to @{username}: {title}"}
 
 
 @frappe.whitelist()

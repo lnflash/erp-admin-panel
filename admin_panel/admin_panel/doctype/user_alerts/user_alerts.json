@@ -10,6 +10,7 @@
   "title",
   "message",
   "tag",
+  "target_username",
   "sent_by",
   "sent_on"
  ],
@@ -37,6 +38,13 @@
    "reqd": 1
   },
   {
+   "description": "Set when the alert was sent to a single user instead of broadcast to all.",
+   "fieldname": "target_username",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Target Username"
+  },
+  {
    "fieldname": "sent_by",
    "fieldtype": "Data",
    "in_list_view": 1,
@@ -51,7 +59,7 @@
   }
  ],
  "links": [],
- "modified": "2025-11-20 20:07:29.944479",
+ "modified": "2026-08-19 17:34:15.750033",
  "modified_by": "Administrator",
  "module": "Admin Panel",
  "name": "User Alerts",
