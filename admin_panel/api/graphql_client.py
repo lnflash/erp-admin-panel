@@ -261,6 +261,17 @@ class GraphQLClient:
 		}
 	"""
 
+	USER_NOTIFICATION_SEND_MUTATION = """
+		mutation UserNotificationSend($input: UserNotificationSendInput!) {
+			userNotificationSend(input: $input) {
+				errors {
+					message
+				}
+				success
+			}
+		}
+	"""
+
 	CASHOUT_NOTIFICATION_SEND_MUTATION = """
 		mutation CashoutNotificationSend($input: CashoutNotificationSendInput!) {
 			cashoutNotificationSend(input: $input) {
@@ -414,6 +425,18 @@ class GraphQLClient:
 				self.SEND_NOTIFICATION_MUTATION,
 				{"input": {"topic": topic, "title": title, "body": body}},
 				"sendNotification",
+				result_type=dict,
+			)
+			or {}
+		)
+
+	def send_user_alert(self, username: str, title: str, body: str) -> dict:
+		"""Send a push notification to a single Flash user by username."""
+		return (
+			self.execute_and_extract(
+				self.USER_NOTIFICATION_SEND_MUTATION,
+				{"input": {"username": username, "title": title, "body": body}},
+				"userNotificationSend",
 				result_type=dict,
 			)
 			or {}

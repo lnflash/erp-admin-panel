@@ -127,10 +127,35 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
             <div class="au-grid">
                 <div class="au-card au-compose">
                     <div class="au-card-header">
-                        <h3>Send Alert to All Users</h3>
-                        <p>The alert is broadcast to every user in the system — you will be asked to confirm.</p>
+                        <h3 id="form-card-title">Send Alert to All Users</h3>
+                        <p id="form-card-desc">The alert is broadcast to every user in the system — you will be asked to confirm.</p>
                     </div>
                     <div class="au-card-body">
+                        <div class="form-group">
+                            <label for="alert-audience">
+                                Audience
+                                <span class="required">*</span>
+                            </label>
+                            <select class="form-control" id="alert-audience">
+                                <option value="all">All users (broadcast)</option>
+                                <option value="user">Specific user</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group" id="username-group" style="display: none;">
+                            <label for="alert-username">
+                                Username
+                                <span class="required">*</span>
+                            </label>
+                            <input
+                                type="text"
+                                class="form-control"
+                                id="alert-username"
+                                placeholder="e.g. jaceth2009"
+                                maxlength="50"
+                            >
+                        </div>
+
                         <div class="form-group">
                             <label for="alert-title">
                                 Alert Title
@@ -164,7 +189,7 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
                             </div>
                         </div>
 
-                        <div class="form-group">
+                        <div class="form-group" id="alert-type-group">
                             <label for="alert-tag">
                                 Alert Type
                                 <span class="required">*</span>
@@ -194,7 +219,7 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
                                     <p id="preview-description"></p>
                                     <div class="au-alert-meta">
                                         <span class="au-tag" id="preview-tag"></span>
-                                        <small>to all users</small>
+                                        <small id="preview-audience">to all users</small>
                                     </div>
                                 </div>
                             </div>
@@ -204,7 +229,7 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
                     <div class="au-card au-history">
                         <div class="au-card-header">
                             <h3>Sent Alerts History</h3>
-                            <p>The last 10 broadcasts</p>
+                            <p>The last 10 alerts</p>
                         </div>
                         <div class="au-card-body">
                             <div id="alert-history-list">
@@ -220,6 +245,13 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
 	const $titleInput = page.main.find("#alert-title");
 	const $descriptionInput = page.main.find("#alert-description");
 	const $tagSelect = page.main.find("#alert-tag");
+	const $audienceSelect = page.main.find("#alert-audience");
+	const $usernameInput = page.main.find("#alert-username");
+	const $usernameGroup = page.main.find("#username-group");
+	const $typeGroup = page.main.find("#alert-type-group");
+	const $formCardTitle = page.main.find("#form-card-title");
+	const $formCardDesc = page.main.find("#form-card-desc");
+	const $previewAudience = page.main.find("#preview-audience");
 	const $sendButton = page.main.find("#send-alert-btn");
 	const $titleCount = page.main.find("#title-count");
 	const $descriptionCount = page.main.find("#description-count");
@@ -230,10 +262,29 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
 	const $previewEmpty = page.main.find(".au-preview-empty");
 	const $previewCard = page.main.find(".alert-preview-card");
 
+	let topicsLoaded = false;
+	// True from the moment a send is dispatched until its always-handler runs.
+	let sending = false;
+
+	function isUserAudience() {
+		return $audienceSelect.val() === "user";
+	}
+
+	function normalizedUsername() {
+		return $usernameInput.val().trim().replace(/^@/, "");
+	}
+
 	function updatePreview() {
 		const title = $titleInput.val().trim();
 		const description = $descriptionInput.val().trim();
-		const tag = $tagSelect.val();
+		const tag = isUserAudience() ? "DIRECT" : $tagSelect.val();
+
+		if (isUserAudience()) {
+			const username = normalizedUsername();
+			$previewAudience.text("to @" + (username || "username"));
+		} else {
+			$previewAudience.text("to all users");
+		}
 
 		if (title || description) {
 			$previewTitle.text(title || "No title");
@@ -246,6 +297,39 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
 			$previewContainer.hide();
 			$previewEmpty.show();
 		}
+	}
+
+	function setSendButtonIdle() {
+		// Never resurrect the button mid-send. A direct alert is sendable before
+		// the topics call returns, so a slow get_alert_types response can land
+		// while send_user_alert is still in flight — re-enabling here would let
+		// a second click push the same notification to the customer twice.
+		if (sending) return;
+
+		const label = isUserAudience() ? "Send Alert to User" : "Send Alert to All Users";
+		$sendButton.html('<span class="btn-text">' + label + "</span>");
+		// Topic broadcasts need the topic list; a direct alert does not.
+		$sendButton.prop("disabled", !isUserAudience() && !topicsLoaded);
+	}
+
+	function updateAudienceUI() {
+		if (isUserAudience()) {
+			$usernameGroup.show();
+			$typeGroup.hide();
+			$formCardTitle.text("Send Alert to One User");
+			$formCardDesc.text(
+				"The alert is delivered only to the named user's devices \u2014 you will be asked to confirm."
+			);
+		} else {
+			$usernameGroup.hide();
+			$typeGroup.show();
+			$formCardTitle.text("Send Alert to All Users");
+			$formCardDesc.text(
+				"The alert is broadcast to every user in the system \u2014 you will be asked to confirm."
+			);
+		}
+		setSendButtonIdle();
+		updatePreview();
 	}
 
 	function loadAlertTypes() {
@@ -261,11 +345,19 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
 				}
 
 				topics.forEach(function (topic) {
-					$tagSelect.append(`<option value="${topic}">${topic}</option>`);
+					// Escaped, not raw: a topic containing a double quote would
+					// otherwise break out of the value attribute, and
+					// $tagSelect.val() would return a truncated topic — sending the
+					// broadcast under a different one than the dialog displayed.
+					// The parser decodes the entities back, so val() still yields
+					// the original topic.
+					const safeTopic = frappe.utils.escape_html(topic);
+					$tagSelect.append(`<option value="${safeTopic}">${safeTopic}</option>`);
 				});
 
 				$tagSelect.prop("disabled", false);
-				$sendButton.prop("disabled", false);
+				topicsLoaded = true;
+				setSendButtonIdle();
 				updatePreview();
 			},
 			error: function () {
@@ -281,27 +373,51 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
 		});
 	}
 
-	function sendAlert(title, description, alertType) {
+	function sendAlert(title, description, alertType, username) {
+		sending = true;
 		$sendButton.prop("disabled", true);
 		$sendButton.html('<span class="btn-text">Sending...</span>');
 
 		frappe.call({
-			method: "admin_panel.api.admin_api.send_alert",
-			args: {
-				title: title,
-				message: description,
-				alert_type: alertType,
-			},
+			method: username
+				? "admin_panel.api.admin_api.send_user_alert"
+				: "admin_panel.api.admin_api.send_alert",
+			args: username
+				? {
+						username: username,
+						title: title,
+						message: description,
+				  }
+				: {
+						title: title,
+						message: description,
+						alert_type: alertType,
+				  },
 			callback: function (response) {
 				if (response.message && response.message.success) {
+					// A delivered push whose audit row failed to write still
+					// succeeded — say so, and say not to resend.
+					if (response.message.warning) {
+						frappe.msgprint({
+							title: "Sent — audit row failed",
+							message: frappe.utils.escape_html(response.message.warning),
+							indicator: "orange",
+						});
+					}
 					frappe.show_alert(
 						{
-							message: "Alert sent successfully to all users!",
+							message: username
+								? `Alert sent to @${username}!`
+								: "Alert sent successfully to all users!",
 							indicator: "green",
 						},
 						5
 					);
 
+					// Clear the recipient too. Resetting the message while
+					// leaving @alice in the box is how the next alert, typed
+					// for @bob, goes to the wrong customer.
+					$usernameInput.val("");
 					$titleInput.val("");
 					$descriptionInput.val("");
 					$titleCount.text("0");
@@ -330,8 +446,8 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
 				});
 			},
 			always: function () {
-				$sendButton.prop("disabled", false);
-				$sendButton.html('<span class="btn-text">Send Alert to All Users</span>');
+				sending = false;
+				setSendButtonIdle();
 			},
 		});
 	}
@@ -360,9 +476,25 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
 					return;
 				}
 
+				// The endpoint drops target_username while the migrate that adds
+				// the column is still running, so every row comes back with no
+				// target. Saying "to all users" there would relabel a private
+				// message to one customer as a broadcast to every Flash user;
+				// say we do not know instead. Absent flag = column present
+				// (the pre-flag server contract).
+				const targetKnown = r.message.target_username_available !== false;
+
 				const html = r.message.logs
 					.map((log) => {
 						const date = frappe.datetime.str_to_user(log.sent_on);
+						let audience;
+						if (log.target_username) {
+							audience = `to @${frappe.utils.escape_html(log.target_username)}`;
+						} else if (targetKnown) {
+							audience = "to all users";
+						} else {
+							audience = "recipient unavailable";
+						}
 						return `
                         <div class="alert-item ${getSeverityClass(log.tag)}">
                             <h4>${frappe.utils.escape_html(log.title)}</h4>
@@ -371,9 +503,9 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
                                 <span class="au-tag">${frappe.utils.escape_html(
 									log.tag || ""
 								)}</span>
-                                <small>${frappe.utils.escape_html(
-									log.sent_by || ""
-								)} \u00b7 ${date}</small>
+                                <small>${audience} \u00b7 ${frappe.utils.escape_html(
+							log.sent_by || ""
+						)} \u00b7 ${date}</small>
                             </div>
                         </div>
                     `;
@@ -397,10 +529,28 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
 
 	$tagSelect.on("change", updatePreview);
 
+	$audienceSelect.on("change", updateAudienceUI);
+
+	$usernameInput.on("input", updatePreview);
+
 	$sendButton.on("click", function () {
+		// The disabled attribute is the visual guard; this is the real one.
+		if (sending) return;
+
 		const title = $titleInput.val().trim();
 		const description = $descriptionInput.val().trim();
 		const alertType = $tagSelect.val();
+		const username = isUserAudience() ? normalizedUsername() : null;
+
+		if (isUserAudience() && !username) {
+			frappe.msgprint({
+				title: "Missing Username",
+				message: "Please enter the username of the user to alert",
+				indicator: "red",
+			});
+			$usernameInput.focus();
+			return;
+		}
 
 		if (!title) {
 			frappe.msgprint({
@@ -422,17 +572,26 @@ frappe.pages["alert-users"].on_page_load = function (wrapper) {
 			return;
 		}
 
-		frappe.confirm(
-			`Are you sure you want to send this ${alertType} alert to all users?<br><br>
-            <strong>Title:</strong> ${title}<br>
-            <strong>Message:</strong> ${description}<br>
-            <strong>Type:</strong> ${alertType}`,
-			function () {
-				sendAlert(title, description, alertType);
-			}
-		);
+		const escapedTitle = frappe.utils.escape_html(title);
+		const escapedDescription = frappe.utils.escape_html(description);
+		const escapedType = frappe.utils.escape_html(alertType || "");
+		const confirmMessage = username
+			? `Are you sure you want to send this alert to <strong>@${frappe.utils.escape_html(
+					username
+			  )}</strong> only?<br><br>
+            <strong>Title:</strong> ${escapedTitle}<br>
+            <strong>Message:</strong> ${escapedDescription}`
+			: `Are you sure you want to send this ${escapedType} alert to all users?<br><br>
+            <strong>Title:</strong> ${escapedTitle}<br>
+            <strong>Message:</strong> ${escapedDescription}<br>
+            <strong>Type:</strong> ${escapedType}`;
+
+		frappe.confirm(confirmMessage, function () {
+			sendAlert(title, description, alertType, username);
+		});
 	});
 
+	updateAudienceUI();
 	loadAlertTypes();
 	loadAlertHistory();
 };
