@@ -15,7 +15,7 @@ retention policy, and the pages become frequent in the awesomebar too.
 
 import frappe
 
-from .auth import ADMIN_ROLES, require_admin
+from .auth import require_admin
 from .common import handle_api_errors
 from .nav_core import FREQUENT_WINDOW_DAYS, NAV_GROUPS, by_route, normalize_route, rank_frequent
 
@@ -59,11 +59,7 @@ def get_nav():
 			groups.append({"title": group["title"], "links": links})
 
 	known = {link["route"]: link for group in groups for link in group["links"]}
-	return {
-		"groups": groups,
-		"frequent": _frequent(known),
-		"admin_roles": list(ADMIN_ROLES),
-	}
+	return {"groups": groups, "frequent": _frequent(known)}
 
 
 @frappe.whitelist()

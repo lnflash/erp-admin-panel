@@ -206,16 +206,45 @@ def test_revenue_reads_card_fees_only_from_fygaro():
 	"""Bridge transfers carry no fee breakdown; including them would add a
 	column of empty strings to the pending count for no reason."""
 	assert 'REVENUE_TOPUP_PROVIDER = "Fygaro"' in REVENUE_PY
-	assert '"provider": REVENUE_TOPUP_PROVIDER' in REVENUE_PY
+	assert "provider = %(provider)s" in REVENUE_PY
 
 
-def test_card_fees_are_not_summed_in_sql():
-	"""SUM() over the Data-typed flash_fee column casts empty strings to 0,
+def test_revenue_counts_both_terminal_fygaro_success_statuses():
+	"""fygaro_topup_core names BOTH Completed and Settled as terminal Fygaro
+	statuses — the operator Complete action stamps one, webhook settlement
+	lands at the other — and the fee is revenue either way. Filtering on a
+	single status silently drops every Settled row's fee: the exact
+	understatement this dashboard exists to prevent, one status value over."""
+	assert 'REVENUE_TOPUP_STATUSES = ("Completed", "Settled")' in REVENUE_PY
+	assert "status IN %(statuses)s" in REVENUE_PY
+
+
+def test_card_fees_are_aggregated_in_sql_behind_the_numeric_guard():
+	"""The dashboard is the desk landing page and top-up rows grow without
+	bound, so the fees must be aggregated server-side — but a bare SUM over
+	the Data-typed flash_fee column casts empty and garbage strings to 0,
 	which is precisely the silent understatement revenue_core exists to
-	prevent. Cashout fees are a real Float column and may be summed."""
-	topup_block = REVENUE_PY[REVENUE_PY.index("def _topup_rows") :]
-	assert "Sum(" not in topup_block
-	assert "coerce_fee(row.flash_fee)" in topup_block
+	prevent. Every sum of the column therefore goes through FEE_SQL's
+	REGEXP guard, and the rows the guard rejects surface as fee_pending."""
+	# No unguarded aggregation of the Data column anywhere in the module.
+	assert "Sum(flash_fee" not in REVENUE_PY
+	assert "SUM(flash_fee" not in REVENUE_PY
+	assert "frappe.get_all(" not in REVENUE_PY, "top-up rows must be aggregated in SQL, not fetched"
+	assert "REGEXP %(fee_pattern)s" in REVENUE_PY
+	assert "CAST(TRIM(flash_fee) AS DECIMAL" in REVENUE_PY
+
+	topup_block = REVENUE_PY[REVENUE_PY.index("def _topup_fees") :]
+	assert "SUM({FEE_SQL})" in topup_block
+	assert "COUNT(*) - COUNT({FEE_SQL})" in topup_block
+
+
+def test_topup_windows_are_half_open_like_the_cashout_ones():
+	"""Both revenue lines must window creation the same way — inclusive
+	start, exclusive end, exactly revenue_core.in_window — or the two lines
+	of one tile could disagree about a boundary row."""
+	topup_block = REVENUE_PY[REVENUE_PY.index("def _topup_fees") :]
+	assert "creation >= %(start)s" in topup_block
+	assert "creation < %(end)s" in topup_block
 
 
 def test_record_visit_only_accepts_registry_routes():
@@ -321,6 +350,15 @@ def test_dashboard_page_is_role_gated_so_others_keep_their_landing_page():
 	# and re-add them, and any code reading the Page in between would see an
 	# ungated landing page.
 	assert [row["role"] for row in DASHBOARD_PAGE["roles"]] == admin_roles
+	# ...but the file only syncs at all when its "modified" stamp is newer
+	# than the DB row's. The roles were added after the page first shipped, so
+	# a "modified" still equal to "creation" means every existing site skips
+	# the file and the rationale above is only true on fresh installs. Bump
+	# "modified" whenever this JSON changes.
+	assert DASHBOARD_PAGE["modified"] > DASHBOARD_PAGE["creation"], (
+		"admin_dashboard.json changed without bumping 'modified' — "
+		"bench migrate will skip file-syncing it on existing sites"
+	)
 
 
 def test_every_dashboard_page_destination_is_registered_for_sync():

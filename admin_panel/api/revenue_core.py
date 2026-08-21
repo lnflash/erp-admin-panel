@@ -12,13 +12,21 @@ Two revenue lines exist in this database and they are shaped differently:
   uncomputed fee is NULL or empty rather than 0.0. That is the whole reason
   this module exists: a fee that was never computed must surface as *pending*,
   not total as zero, and a non-USD fee must be reported on its own rather than
-  added into a USD figure.
+  added into a USD figure. The caller sums these in SQL too — but only behind
+  the ``FEE_PATTERN`` numeric guard, never as a blind cast.
 """
 
 from datetime import datetime, timedelta
 
 # The currency every headline number is expressed in.
 BASE_CURRENCY = "USD"
+
+# What a computed fee looks like as a string. ``revenue.FEE_SQL`` uses this
+# (via REGEXP) to decide which Data-typed values may enter the SQL SUM;
+# anything that does not match is counted as pending instead of casting to 0.
+# ``coerce_fee`` is the Python reference for the same rule — the test suite
+# pins the two against each other.
+FEE_PATTERN = r"^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)$"
 
 
 def _midnight(moment):
@@ -47,7 +55,9 @@ def coerce_fee(raw):
 
 	Returning ``None`` rather than 0.0 is the point: the caller counts these
 	separately so the dashboard can say "excluded" instead of quietly
-	understating revenue.
+	understating revenue. This is the Python reference semantics for
+	``FEE_PATTERN`` / ``revenue.FEE_SQL``, which apply the same rule inside
+	the aggregate query.
 	"""
 	if isinstance(raw, str):
 		raw = raw.strip()
@@ -60,6 +70,12 @@ def coerce_fee(raw):
 
 
 def in_window(moment, start, end):
+	"""The half-open window contract — inclusive start, exclusive end.
+
+	The revenue queries implement exactly this in SQL (``creation >= start``
+	/ ``creation < end``); this stays as the executable reference so the
+	boundary semantics have a pinned, runnable definition.
+	"""
 	if start is not None and moment < start:
 		return False
 	if end is not None and moment >= end:
@@ -67,23 +83,26 @@ def in_window(moment, start, end):
 	return True
 
 
-def topup_fees(rows, start, end):
-	"""Window coerced Fygaro rows into a USD total plus its caveats.
+def topup_fees(groups):
+	"""Assemble per-currency Fygaro fee aggregates into a USD total plus caveats.
 
-	``rows`` are ``{"creation", "fee", "currency"}`` dicts, already coerced.
+	``groups`` are ``{"currency", "fee_total", "fee_pending"}`` rows — one
+	per currency, already windowed and summed in SQL by ``revenue._topup_fees``.
+	``fee_total`` is ``None`` when no row in that currency carried a computed
+	fee; the pending count still surfaces, never folded into the total.
 	"""
 	total = 0.0
 	pending = 0
 	other = {}
-	for row in rows:
-		if not in_window(row["creation"], start, end):
+	for group in groups:
+		pending += int(group["fee_pending"] or 0)
+		if group["fee_total"] is None:
 			continue
-		if row["fee"] is None:
-			pending += 1
-		elif row["currency"] == BASE_CURRENCY:
-			total += row["fee"]
+		fee = float(group["fee_total"])
+		if group["currency"] == BASE_CURRENCY:
+			total += fee
 		else:
-			other[row["currency"]] = round(other.get(row["currency"], 0.0) + row["fee"], 2)
+			other[group["currency"]] = round(fee, 2)
 	return {"usd": round(total, 2), "fee_pending": pending, "other_currency": other}
 
 

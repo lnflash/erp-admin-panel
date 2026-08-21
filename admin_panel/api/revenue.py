@@ -16,14 +16,26 @@ from frappe.query_builder.functions import Sum
 
 from .auth import require_admin
 from .common import handle_api_errors
-from .revenue_core import BASE_CURRENCY, coerce_fee, pct_change, topup_fees, window_starts
+from .revenue_core import BASE_CURRENCY, FEE_PATTERN, pct_change, topup_fees, window_starts
 
 # A cashout only earns its fee once the fiat actually went out.
 REVENUE_CASHOUT_STATUS = "Completed"
 
-# Fygaro is the only provider carrying a Flash fee; Bridge never does.
-REVENUE_TOPUP_STATUS = "Completed"
+# Fygaro is the only provider carrying a Flash fee; Bridge never does. A
+# Fygaro row can terminate at either success status — ``Completed`` (the
+# operator status action) or ``Settled`` (``fygaro_topup_core`` names both
+# terminal) — and its fee is revenue either way. Counting only one of them
+# would silently understate, which is the failure this module exists to
+# prevent.
+REVENUE_TOPUP_STATUSES = ("Completed", "Settled")
 REVENUE_TOPUP_PROVIDER = "Fygaro"
+
+# The SQL twin of ``revenue_core.coerce_fee``: ``flash_fee`` is a Data
+# column, and a bare SUM(CAST(...)) would cast NULL, empty and garbage
+# strings to 0 — burying exactly the uncomputed-fee rows the dashboard has
+# to disclose. Only a value matching ``FEE_PATTERN`` enters the SUM; every
+# other row stays NULL so it lands in the pending count instead.
+FEE_SQL = "CASE WHEN TRIM(flash_fee) REGEXP %(fee_pattern)s THEN CAST(TRIM(flash_fee) AS DECIMAL(20, 6)) END"
 
 
 def _cashout_fees(start, end):
@@ -49,26 +61,44 @@ def _cashout_fees(start, end):
 	return float(result[0][0] or 0.0) if result else 0.0
 
 
-def _topup_rows():
-	"""Completed Fygaro rows, coerced once and reused for every window.
+def _topup_fees(start, end):
+	"""Fygaro fee aggregates for one window, grouped by currency in SQL.
 
-	Fetched rather than aggregated, unlike cashouts: the fee column is Data,
-	so summing it in SQL would cast empty strings to 0 and silently bury the
-	uncomputed-fee rows the dashboard has to disclose.
+	Aggregated server-side for the same reason as cashouts: this page is the
+	desk landing page and top-up rows grow without bound, so fetching every
+	row on every load would make login latency grow with volume forever. The
+	Data-typed fee column's empty-string trap (see ``revenue_core``) is
+	handled by ``FEE_SQL`` — uncomputed fees are counted, never cast to 0 —
+	and the window bounds are half-open exactly like ``revenue_core.in_window``.
 	"""
-	rows = frappe.get_all(
-		"Bridge Transfer Request",
-		filters={"status": REVENUE_TOPUP_STATUS, "provider": REVENUE_TOPUP_PROVIDER},
-		fields=["creation", "flash_fee", "currency"],
+	conditions = ["provider = %(provider)s", "status IN %(statuses)s"]
+	values = {
+		"provider": REVENUE_TOPUP_PROVIDER,
+		"statuses": REVENUE_TOPUP_STATUSES,
+		"fee_pattern": FEE_PATTERN,
+		"base": BASE_CURRENCY,
+	}
+	if start is not None:
+		conditions.append("creation >= %(start)s")
+		values["start"] = start
+	if end is not None:
+		conditions.append("creation < %(end)s")
+		values["end"] = end
+
+	groups = frappe.db.sql(
+		f"""
+		SELECT
+			UPPER(COALESCE(NULLIF(TRIM(currency), ''), %(base)s)) AS currency,
+			SUM({FEE_SQL}) AS fee_total,
+			COUNT(*) - COUNT({FEE_SQL}) AS fee_pending
+		FROM `tabBridge Transfer Request`
+		WHERE {" AND ".join(conditions)}
+		GROUP BY 1
+		""",
+		values,
+		as_dict=True,
 	)
-	return [
-		{
-			"creation": row.creation,
-			"fee": coerce_fee(row.flash_fee),
-			"currency": (row.currency or BASE_CURRENCY).upper(),
-		}
-		for row in rows
-	]
+	return topup_fees(groups)
 
 
 @frappe.whitelist()
@@ -77,12 +107,11 @@ def _topup_rows():
 def get_revenue_summary():
 	"""Flash fee revenue by window, split by the line that earned it."""
 	now = frappe.utils.now_datetime()
-	topup_rows = _topup_rows()
 
 	windows = {}
 	for key, (start, end) in window_starts(now).items():
 		cashout = round(_cashout_fees(start, end), 2)
-		topup = topup_fees(topup_rows, start, end)
+		topup = _topup_fees(start, end)
 		windows[key] = {
 			"total": round(cashout + topup["usd"], 2),
 			"cashout": cashout,
