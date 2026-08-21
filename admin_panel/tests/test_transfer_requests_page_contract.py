@@ -16,11 +16,16 @@ def workspace_links():
 
 
 def test_admin_dashboard_routes_transfer_requests_card_to_custom_page():
-	js = read_text(ADMIN_PANEL / "admin_panel" / "page" / "admin_dashboard" / "admin_dashboard.js")
+	"""The dashboard renders its tiles from the nav registry now, so the
+	destination is asserted there rather than in the page markup."""
+	from admin_panel.api.nav_core import by_route
 
-	assert 'ad-tool-title">Transfer Requests' in js
-	assert 'data-route="/app/transfer-requests"' in js
-	assert 'data-route="/app/bridge-transfer-request"' not in js
+	link = by_route()["transfer-requests"]
+
+	assert link["kind"] == "page"
+	assert link["label"] == "Transfer Requests"
+	# The raw doctype list is a separate tile; the operator queue is the page.
+	assert by_route()["bridge-transfer-request"]["kind"] == "doctype"
 
 
 def test_setup_registers_transfer_requests_page_not_cashout_requests():

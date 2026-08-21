@@ -8,6 +8,7 @@ def after_migrate():
 	ensure_service_account_roles()
 	sync_pages()
 	delete_legacy_pages()
+	ensure_desk_home_page()
 	seed_allowed_countries()
 
 
@@ -98,7 +99,18 @@ def sync_pages():
 			"title": "Dashboard",
 			"module": "Admin Panel",
 			"standard": "Yes",
-			"roles": [],
+			# The ONLY page here that carries roles, and it is load-bearing:
+			# this is the desk home page (see ensure_desk_home_page), and
+			# boot.add_home_page falls back to the Workspaces view when
+			# Page.is_permitted() says no. Role-gating the page is therefore
+			# what gives every non-admin desk user their normal landing page
+			# back, with no separate opt-out list to maintain. Mirrors
+			# admin_panel.api.auth.ADMIN_ROLES.
+			"roles": [
+				{"role": "System Manager"},
+				{"role": "Accounts Manager"},
+				{"role": "Flash Admin"},
+			],
 		},
 		{
 			"name": "transfer-requests",
@@ -128,6 +140,13 @@ def sync_pages():
 			"standard": "Yes",
 			"roles": [],
 		},
+		{
+			"name": "bridge-kyc",
+			"title": "Bridge KYC",
+			"module": "Admin Panel",
+			"standard": "Yes",
+			"roles": [],
+		},
 	]
 
 	for page_data in pages:
@@ -150,3 +169,30 @@ def delete_legacy_pages():
 	if frappe.db.exists("Page", "cashout-requests"):
 		frappe.delete_doc("Page", "cashout-requests", ignore_permissions=True, force=True)
 		frappe.db.commit()
+
+
+# The Page that desk users land on at /app. Overridable per-site with the
+# `desk_home_page` site_config key; set it to an empty value to opt out and
+# keep Frappe's stock Workspaces landing.
+DESK_HOME_PAGE = "admin-dashboard"
+
+
+def ensure_desk_home_page():
+	"""Make the Admin Dashboard the desk landing page.
+
+	``frappe.boot.add_home_page`` reads the GLOBAL default ``desktop:home_page``
+	and hands it to ``frappe.desk.desk_page.get``, falling back to the
+	``Workspaces`` view on DoesNotExistError or PermissionError. So this one
+	default plus the Page's roles is the whole mechanism: admins get the
+	dashboard, everyone else keeps Workspaces, and no user record is touched.
+
+	Re-asserted on every migrate so a restored or re-seeded site converges,
+	and skipped when already correct so a deploy is a no-op.
+	"""
+	configured = frappe.conf.get("desk_home_page", DESK_HOME_PAGE)
+	if not configured:
+		return
+	if frappe.db.get_default("desktop:home_page") == configured:
+		return
+	frappe.db.set_default("desktop:home_page", configured)
+	frappe.db.commit()

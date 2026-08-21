@@ -69,10 +69,13 @@ def test_customer_detail_caps_tx_limit():
 
 
 def test_admin_dashboard_has_wallet_census_card():
-	js = (ADMIN_PANEL / "admin_panel" / "page" / "admin_dashboard" / "admin_dashboard.js").read_text()
+	"""Tiles come from the nav registry, not from markup in the page."""
+	from admin_panel.api.nav_core import by_route
 
-	assert 'data-route="/app/wallet-census"' in js
-	assert 'ad-tool-title">Wallet Census' in js
+	link = by_route()["wallet-census"]
+
+	assert link["kind"] == "page"
+	assert link["label"] == "Wallet Census"
 
 
 def test_workspace_links_include_wallet_census_page():

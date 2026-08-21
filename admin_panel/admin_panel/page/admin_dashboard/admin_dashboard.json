@@ -10,7 +10,17 @@
  "name": "admin-dashboard",
  "owner": "Administrator",
  "page_name": "admin-dashboard",
- "roles": [],
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "Accounts Manager"
+  },
+  {
+   "role": "Flash Admin"
+  }
+ ],
  "script": null,
  "standard": "Yes",
  "style": null,

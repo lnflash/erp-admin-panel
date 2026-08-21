@@ -144,6 +144,10 @@ def test_api_key_never_reaches_the_client():
 
 
 def test_admin_dashboard_tools_grid_links_the_page():
-	dashboard_js = read(ADMIN_PANEL / "admin_panel" / "page" / "admin_dashboard" / "admin_dashboard.js")
-	assert 'data-route="/app/bridge-kyc"' in dashboard_js
-	assert 'ad-tool-title">Bridge KYC' in dashboard_js
+	"""Tiles come from the nav registry, not from markup in the page."""
+	from admin_panel.api.nav_core import by_route
+
+	link = by_route()["bridge-kyc"]
+
+	assert link["kind"] == "page"
+	assert link["label"] == "Bridge KYC"
