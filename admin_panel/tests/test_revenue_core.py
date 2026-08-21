@@ -67,13 +67,16 @@ def test_fee_pattern_mirrors_coerce_fee():
 	pattern drifted from ``coerce_fee`` the SQL totals and the documented
 	semantics would silently disagree."""
 	computed = ["1.25", "2.50", "0", "0.00", "300", "10.", ".5", "-1.25"]
-	never_computed = ["", "   ", "pending", "$1.25", "1,25", "1.2.3", "1e3junk"]
+	# "1e3", "nan", "inf" matter: ``float()`` happily parses them, so a
+	# float()-first coerce_fee would total values the SQL reports as pending.
+	never_computed = ["", "   ", "pending", "$1.25", "1,25", "1.2.3", "1e3junk", "1e3", "nan", "inf", "-inf"]
 
 	for raw in computed:
 		assert re.match(FEE_PATTERN, raw.strip()), raw
 		assert coerce_fee(raw) is not None, raw
 	for raw in never_computed:
 		assert not re.match(FEE_PATTERN, raw.strip()), raw
+		assert coerce_fee(raw) is None, raw
 
 
 def test_fee_pattern_admits_nothing_the_cast_would_mangle():

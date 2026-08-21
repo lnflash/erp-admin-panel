@@ -16,6 +16,7 @@ Two revenue lines exist in this database and they are shaped differently:
   the ``FEE_PATTERN`` numeric guard, never as a blind cast.
 """
 
+import re
 from datetime import datetime, timedelta
 
 # The currency every headline number is expressed in.
@@ -60,8 +61,14 @@ def coerce_fee(raw):
 	the aggregate query.
 	"""
 	if isinstance(raw, str):
+		# Same gate as the SQL: only what FEE_PATTERN admits may become a
+		# number. ``float()`` alone would also accept scientific notation and
+		# specials ("1e3", "nan", "inf") that the SQL discloses as pending.
 		raw = raw.strip()
-	if raw in (None, ""):
+		if not re.match(FEE_PATTERN, raw):
+			return None
+		return float(raw)
+	if raw is None:
 		return None
 	try:
 		return float(raw)
