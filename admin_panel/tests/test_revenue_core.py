@@ -22,7 +22,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from admin_panel.api.revenue_core import (
 	BASE_CURRENCY,
-	FEE_PATTERN,
+	FEE_PATTERN_SQL,
+	SQL_WHITESPACE,
 	coerce_fee,
 	in_window,
 	pct_change,
@@ -62,21 +63,51 @@ def test_coerce_fee_distinguishes_absent_from_zero():
 	assert coerce_fee("0.00") is not None
 
 
+# ``FEE_PATTERN_SQL`` executed as Python: ``[[:space:]]`` is a POSIX class
+# PCRE and Python both lack by that name, but its member set is exactly
+# ``SQL_WHITESPACE`` — so this translation runs the very rule MariaDB runs.
+FEE_SQL_AS_PY = FEE_PATTERN_SQL.replace("[[:space:]]", f"[{SQL_WHITESPACE}]")
+
+
+def sql_side_computes(raw):
+	"""What ``revenue.FEE_SQL`` decides for a raw column value."""
+	return re.fullmatch(FEE_SQL_AS_PY, raw) is not None
+
+
 def test_fee_pattern_mirrors_coerce_fee():
-	"""``revenue.FEE_SQL`` decides sum-vs-pending with ``FEE_PATTERN``; if the
-	pattern drifted from ``coerce_fee`` the SQL totals and the documented
-	semantics would silently disagree."""
+	"""``revenue.FEE_SQL`` decides sum-vs-pending with ``FEE_PATTERN_SQL``; if
+	that rule drifted from ``coerce_fee`` the SQL totals and the documented
+	semantics would silently disagree. Run on the RAW value, unstripped —
+	the whitespace treatment is part of the rule being mirrored."""
 	computed = ["1.25", "2.50", "0", "0.00", "300", "10.", ".5", "-1.25"]
 	# "1e3", "nan", "inf" matter: ``float()`` happily parses them, so a
 	# float()-first coerce_fee would total values the SQL reports as pending.
 	never_computed = ["", "   ", "pending", "$1.25", "1,25", "1.2.3", "1e3junk", "1e3", "nan", "inf", "-inf"]
 
 	for raw in computed:
-		assert re.match(FEE_PATTERN, raw.strip()), raw
+		assert sql_side_computes(raw), raw
 		assert coerce_fee(raw) is not None, raw
 	for raw in never_computed:
-		assert not re.match(FEE_PATTERN, raw.strip()), raw
+		assert not sql_side_computes(raw), raw
 		assert coerce_fee(raw) is None, raw
+
+
+def test_whitespace_rule_is_identical_on_both_sides():
+	"""The divergence class this pins: ``str.strip()`` eats all unicode
+	whitespace but SQL ``TRIM()`` only spaces — under the old rule a fee
+	like "1.25\t" was computed in Python and pending in SQL. Now both sides
+	forgive exactly the ``[[:space:]]`` set and nothing more."""
+	forgiven = ["1.25\t", "1.25\n", "\t1.25", " 1.25 ", "\r\n1.25\r\n", "\x0b1.25\x0c"]
+	# NBSP and other unicode spaces are outside [[:space:]]: pending on BOTH
+	# sides, where a default str.strip() would have quietly computed them.
+	refused = ["\xa01.25", "1.25\xa0", "\u20071.25", "1.\t25"]
+
+	for raw in forgiven:
+		assert sql_side_computes(raw), repr(raw)
+		assert coerce_fee(raw) == 1.25, repr(raw)
+	for raw in refused:
+		assert not sql_side_computes(raw), repr(raw)
+		assert coerce_fee(raw) is None, repr(raw)
 
 
 def test_fee_pattern_admits_nothing_the_cast_would_mangle():

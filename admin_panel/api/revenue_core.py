@@ -22,12 +22,22 @@ from datetime import datetime, timedelta
 # The currency every headline number is expressed in.
 BASE_CURRENCY = "USD"
 
-# What a computed fee looks like as a string. ``revenue.FEE_SQL`` uses this
-# (via REGEXP) to decide which Data-typed values may enter the SQL SUM;
-# anything that does not match is counted as pending instead of casting to 0.
-# ``coerce_fee`` is the Python reference for the same rule — the test suite
-# pins the two against each other.
-FEE_PATTERN = r"^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)$"
+# What a computed fee looks like. ``FEE_CORE`` is the numeric body; both
+# deployed forms derive from it so they cannot drift:
+#
+#   ``FEE_PATTERN``     — Python: ``coerce_fee`` strips ``SQL_WHITESPACE``
+#                         and then requires a full match of the core.
+#   ``revenue.FEE_SQL`` — MariaDB: wraps the core in ``[[:space:]]*`` and
+#                         strips the same set before casting.
+#
+# The two whitespace treatments are deliberately identical: ``[[:space:]]``
+# matches exactly the six ASCII characters below, and ``coerce_fee`` strips
+# exactly those — NOT ``str.strip()``'s default set, which also eats unicode
+# spaces the SQL side would refuse (a value both sides must call pending).
+FEE_CORE = r"-?([0-9]+(\.[0-9]*)?|\.[0-9]+)"
+FEE_PATTERN = rf"^{FEE_CORE}$"
+FEE_PATTERN_SQL = f"^[[:space:]]*{FEE_CORE}[[:space:]]*$"
+SQL_WHITESPACE = " \t\n\r\v\f"
 
 
 def _midnight(moment):
@@ -61,11 +71,13 @@ def coerce_fee(raw):
 	the aggregate query.
 	"""
 	if isinstance(raw, str):
-		# Same gate as the SQL: only what FEE_PATTERN admits may become a
-		# number. ``float()`` alone would also accept scientific notation and
-		# specials ("1e3", "nan", "inf") that the SQL discloses as pending.
-		raw = raw.strip()
-		if not re.match(FEE_PATTERN, raw):
+		# Same gate as the SQL: strip exactly the ``[[:space:]]`` set, then
+		# only what ``FEE_CORE`` fully matches may become a number.
+		# ``float()`` alone would also accept scientific notation and
+		# specials ("1e3", "nan", "inf") that the SQL discloses as pending,
+		# and a bare ``strip()`` would forgive unicode spaces it does not.
+		raw = raw.strip(SQL_WHITESPACE)
+		if not re.fullmatch(FEE_CORE, raw):
 			return None
 		return float(raw)
 	if raw is None:

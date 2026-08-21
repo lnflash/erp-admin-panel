@@ -231,7 +231,12 @@ def test_card_fees_are_aggregated_in_sql_behind_the_numeric_guard():
 	assert "SUM(flash_fee" not in REVENUE_PY
 	assert "frappe.get_all(" not in REVENUE_PY, "top-up rows must be aggregated in SQL, not fetched"
 	assert "REGEXP %(fee_pattern)s" in REVENUE_PY
-	assert "CAST(TRIM(flash_fee) AS DECIMAL" in REVENUE_PY
+	# Both the match and the cast must strip the SAME whitespace set: TRIM()
+	# strips only spaces, so a TRIM-based cast would diverge from the
+	# [[:space:]] rule coerce_fee mirrors (e.g. "1.25\t").
+	assert "REGEXP_REPLACE(flash_fee, '^[[:space:]]+|[[:space:]]+$', '')" in REVENUE_PY
+	assert "CAST(TRIM(flash_fee)" not in REVENUE_PY
+	assert "FEE_PATTERN_SQL" in REVENUE_PY
 
 	topup_block = REVENUE_PY[REVENUE_PY.index("def _topup_fees") :]
 	assert "SUM({FEE_SQL})" in topup_block
@@ -331,7 +336,16 @@ def test_after_migrate_sets_the_desk_home_page():
 def test_desk_home_page_is_overridable_and_converges_quietly():
 	assert 'frappe.conf.get("desk_home_page", DESK_HOME_PAGE)' in SETUP_PY
 	# Already-correct sites must be a no-op, not a write on every migrate.
-	assert 'if frappe.db.get_default("desktop:home_page") == configured:' in SETUP_PY
+	assert "if current == configured:" in SETUP_PY
+
+
+def test_desk_home_page_opt_out_undoes_a_previously_set_default():
+	"""Merely skipping the write is not an opt-out: on any site that migrated
+	once, the default is already set and admins would keep landing on the
+	dashboard forever. Only our own value may be cleared — an operator's
+	hand-picked home page is not ours to remove."""
+	assert "if current == DESK_HOME_PAGE:" in SETUP_PY
+	assert 'frappe.defaults.clear_default("desktop:home_page", parent="__default")' in SETUP_PY
 
 
 def test_dashboard_page_is_role_gated_so_others_keep_their_landing_page():

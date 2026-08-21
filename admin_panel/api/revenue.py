@@ -16,7 +16,7 @@ from frappe.query_builder.functions import Sum
 
 from .auth import require_admin
 from .common import handle_api_errors
-from .revenue_core import BASE_CURRENCY, FEE_PATTERN, pct_change, topup_fees, window_starts
+from .revenue_core import BASE_CURRENCY, FEE_PATTERN_SQL, pct_change, topup_fees, window_starts
 
 # A cashout only earns its fee once the fiat actually went out.
 REVENUE_CASHOUT_STATUS = "Completed"
@@ -35,7 +35,11 @@ REVENUE_TOPUP_PROVIDER = "Fygaro"
 # strings to 0 — burying exactly the uncomputed-fee rows the dashboard has
 # to disclose. Only a value matching ``FEE_PATTERN`` enters the SUM; every
 # other row stays NULL so it lands in the pending count instead.
-FEE_SQL = "CASE WHEN TRIM(flash_fee) REGEXP %(fee_pattern)s THEN CAST(TRIM(flash_fee) AS DECIMAL(20, 6)) END"
+# ``TRIM()`` strips only spaces — a "1.25\t" must not be pending here while
+# ``coerce_fee`` calls it computed — so both the match and the cast strip the
+# full ``[[:space:]]`` set, mirroring ``revenue_core.SQL_WHITESPACE`` exactly.
+FEE_STRIP_SQL = "REGEXP_REPLACE(flash_fee, '^[[:space:]]+|[[:space:]]+$', '')"
+FEE_SQL = f"CASE WHEN flash_fee REGEXP %(fee_pattern)s THEN CAST({FEE_STRIP_SQL} AS DECIMAL(20, 6)) END"
 
 
 def _cashout_fees(start, end):
@@ -75,7 +79,7 @@ def _topup_fees(start, end):
 	values = {
 		"provider": REVENUE_TOPUP_PROVIDER,
 		"statuses": REVENUE_TOPUP_STATUSES,
-		"fee_pattern": FEE_PATTERN,
+		"fee_pattern": FEE_PATTERN_SQL,
 		"base": BASE_CURRENCY,
 	}
 	if start is not None:

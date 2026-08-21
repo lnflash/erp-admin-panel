@@ -190,9 +190,18 @@ def ensure_desk_home_page():
 	and skipped when already correct so a deploy is a no-op.
 	"""
 	configured = frappe.conf.get("desk_home_page", DESK_HOME_PAGE)
+	current = frappe.db.get_default("desktop:home_page")
 	if not configured:
+		# Opting out must also undo the default a previous migrate of this
+		# app set — otherwise the opt-out is inert on any site that has
+		# migrated once, and admins keep landing on the dashboard the
+		# operator just asked to be rid of. Only our own value is cleared;
+		# a page the operator chose themselves is left alone.
+		if current == DESK_HOME_PAGE:
+			frappe.defaults.clear_default("desktop:home_page", parent="__default")
+			frappe.db.commit()
 		return
-	if frappe.db.get_default("desktop:home_page") == configured:
+	if current == configured:
 		return
 	frappe.db.set_default("desktop:home_page", configured)
 	frappe.db.commit()
