@@ -46,7 +46,7 @@
 		return route[0] === "List" && DOCTYPES.includes(route[1]);
 	}
 
-	function inject(attempt) {
+	function inject() {
 		const route = frappe.get_route ? frappe.get_route() : null;
 		if (!is_destination(route)) return;
 
@@ -57,12 +57,7 @@
 		if (wrapper.querySelector(".ad-back-to-dashboard")) return;
 
 		const title = wrapper.querySelector(".page-head .page-title");
-		if (!title) {
-			// First visit renders the page async; retry briefly, then give up
-			// quietly — a missing button must never break the page itself.
-			if ((attempt || 0) < 10) setTimeout(() => inject((attempt || 0) + 1), 100);
-			return;
-		}
+		if (!title) return;
 
 		const btn = document.createElement("button");
 		btn.className = "btn btn-default btn-sm ad-back-to-dashboard";
@@ -80,11 +75,18 @@
 		title.insertBefore(btn, title_area || title.firstChild);
 	}
 
-	// "change" fires on every navigation including the initial route; the
-	// extra ready-call covers a desk boot where the first render beats our
+	// NOT the router's "change" event: the router fires it BEFORE the
+	// container switches pages when the destination renders async (custom
+	// Pages go through frappe.call on the first visit of a session), so
+	// frappe.container.page would still be the page being LEFT — injecting
+	// the button into the wrong page head. Container.change_to triggers
+	// "page-change" only AFTER this.page is updated, and both page factories
+	// build the page head before calling change_to, so the wrapper is always
+	// current and the title always exists — no retry loop needed. The extra
+	// ready-call covers a desk boot where the first page-change beats our
 	// listener registration.
 	$(document).ready(() => {
-		if (frappe.router && frappe.router.on) frappe.router.on("change", () => inject(0));
-		inject(0);
+		$(document).on("page-change", () => inject());
+		inject();
 	});
 })();

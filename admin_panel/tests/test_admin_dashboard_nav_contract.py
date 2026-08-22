@@ -352,6 +352,13 @@ def test_back_button_script_is_included_desk_wide_and_skips_the_dashboard():
 	assert '"admin-dashboard"' not in re.search(r"const PAGES = \[.*?\];", BACK_JS, re.DOTALL).group(0)
 	# Navigation must go through the router, not a page reload.
 	assert 'frappe.set_route("admin-dashboard")' in BACK_JS
+	# Injection must hang off the container's "page-change" (fired AFTER
+	# frappe.container.page is updated), never frappe.router.on("change"),
+	# which fires while an async custom-Page render is still in flight and
+	# would inject the button into the page being LEFT — including the
+	# dashboard itself.
+	assert '$(document).on("page-change"' in BACK_JS
+	assert 'frappe.router.on("change"' not in BACK_JS
 
 
 # ── desk landing page ─────────────────────────────────────────────────────
