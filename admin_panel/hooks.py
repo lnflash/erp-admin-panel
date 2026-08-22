@@ -26,7 +26,8 @@ app_license = "mit"
 
 # include js, css files in header of desk.html
 # app_include_css = "/assets/admin_panel/css/admin_panel.css"
-# app_include_js = "/assets/admin_panel/js/admin_panel.js"
+# Desk-wide: the Back-to-Dashboard button on every dashboard destination.
+app_include_js = "/assets/admin_panel/js/back_to_dashboard.js"
 
 # include js, css files in header of web template
 # web_include_css = "/assets/admin_panel/css/admin_panel.css"
@@ -240,13 +241,13 @@ app_license = "mit"
 after_migrate = ["admin_panel.admin_panel.setup.after_migrate"]
 
 doctype_dashboards = {
-    "Allowed Country": "admin_panel.admin_panel.doctype.allowed_country.allowed_country_dashboard",
+	"Allowed Country": "admin_panel.admin_panel.doctype.allowed_country.allowed_country_dashboard",
 }
 
 fixtures = [
-    {"doctype": "Workspace", "filters": [["module", "=", "Admin Panel"]]},
-    {"doctype": "Client Script", "filters": [["module", "=", "Admin Panel"]]},
-    {"doctype": "Custom Field", "filters": [["dt", "=", "Bank Account"], ["fieldname", "=", "currency"]]},
-    {"doctype": "Number Card", "filters": [["module", "=", "Admin Panel"]]},
-    {"doctype": "Dashboard Chart", "filters": [["module", "=", "Admin Panel"]]},
+	{"doctype": "Workspace", "filters": [["module", "=", "Admin Panel"]]},
+	{"doctype": "Client Script", "filters": [["module", "=", "Admin Panel"]]},
+	{"doctype": "Custom Field", "filters": [["dt", "=", "Bank Account"], ["fieldname", "=", "currency"]]},
+	{"doctype": "Number Card", "filters": [["module", "=", "Admin Panel"]]},
+	{"doctype": "Dashboard Chart", "filters": [["module", "=", "Admin Panel"]]},
 ]
