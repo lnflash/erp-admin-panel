@@ -319,6 +319,54 @@ def test_directory_is_collapsed_by_default():
 	assert '$m.find(".ad-panel").removeClass("on")' in DASHBOARD_JS
 
 
+def test_pill_aria_expanded_tracks_the_post_toggle_state():
+	"""Collapsing by re-click sets open_group to null; the aria-expanded sync
+	must compare each pill against that POST-toggle state, not the raw
+	clicked index — comparing against the clicked index leaves the pill just
+	closed claiming aria-expanded="true" (accent border, rotated chevron,
+	and a lie to screen readers) while its panel is gone."""
+	assert "const open = this.open_group;" in DASHBOARD_JS
+	assert '$(this).attr("aria-expanded", String(Number($(this).data("group")) === open));' in DASHBOARD_JS
+	assert 'String(Number($(this).data("group")) === gi)' not in DASHBOARD_JS
+
+
+def test_nav_refresh_recovers_after_a_nav_error():
+	"""render_nav_error replaces #ad-directory's contents wholesale,
+	destroying the #ad-pills / #ad-panels containers the shell created — so
+	a successful render_nav must re-create that scaffolding before filling
+	it, or one failed get_nav kills the directory until a full page reload
+	(with the error message telling the user to refresh, no less)."""
+	nav_fn = DASHBOARD_JS[DASHBOARD_JS.index("render_nav() {") : DASHBOARD_JS.index("render_nav_error() {")]
+	rebuild = nav_fn.index(
+		'$m.find("#ad-directory").html(\n'
+		'\t\t\t\'<div class="ad-pills" id="ad-pills"></div><div id="ad-panels"></div>\''
+	)
+	assert rebuild < nav_fn.index('$m.find("#ad-pills").html(')
+	assert rebuild < nav_fn.index('$m.find("#ad-panels").html(')
+
+
+def test_chart_refresh_recovers_after_the_empty_state():
+	"""The <2-history empty state replaces .fp-chart-box's contents,
+	destroying #fp-trend and #fp-tt — so render_chart must rebuild that
+	scaffolding before branching, or the first refresh after the second
+	census hits `if (!svg) return` and the trend never charts."""
+	chart_fn = DASHBOARD_JS[DASHBOARD_JS.index("render_chart() {") : DASHBOARD_JS.index("render_queue() {")]
+	rebuild = chart_fn.index('\'<svg id="fp-trend"')
+	assert '<div class="fp-tt" id="fp-tt"></div>' in chart_fn
+	assert rebuild < chart_fn.index("if (!svg) return;")
+	assert rebuild < chart_fn.index("history.length < 2")
+
+
+def test_requests_timestamp_renders_a_field_the_api_returns():
+	"""get_dashboard_stats selects `creation`, not `modified`;
+	frappe.get_all returns only requested fields, so a cell reading
+	r.modified is blank by construction in every row of the glance table."""
+	admin_api = (ADMIN_PANEL / "api" / "admin_api.py").read_text()
+	assert '"creation",' in admin_api
+	assert "(r.creation || " in DASHBOARD_JS
+	assert "r.modified" not in DASHBOARD_JS
+
+
 def test_palette_searches_label_and_group_and_preselects_first_hit():
 	assert "x.label.toLowerCase().includes(q) || g.title.toLowerCase().includes(q)" in DASHBOARD_JS
 	assert "this.pal_sel = 0;" in DASHBOARD_JS

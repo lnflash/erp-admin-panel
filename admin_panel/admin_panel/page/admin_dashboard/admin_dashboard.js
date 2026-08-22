@@ -551,12 +551,19 @@ class OpsDashboard {
 	render_chart() {
 		const c = this.pulse && this.pulse.census;
 		const history = (c && c.history) || [];
+		// The <2-history branch below replaces .fp-chart-box's contents, so
+		// rebuild the svg/tooltip scaffolding first — otherwise a refresh after
+		// the second census finds no #fp-trend and the chart never appears.
+		this.page.main
+			.find(".fp-chart-box")
+			.html(
+				'<svg id="fp-trend" role="img" aria-label="USDT float trend across recent census runs"></svg><div class="fp-tt" id="fp-tt"></div>'
+			);
 		const svg = this.page.main.find("#fp-trend")[0];
 		const tt = this.page.main.find("#fp-tt")[0];
 		if (!svg) return;
 
 		if (history.length < 2) {
-			svg.innerHTML = "";
 			this.page.main
 				.find(".fp-chart-box")
 				.html(
@@ -730,6 +737,14 @@ class OpsDashboard {
 		const $m = this.page.main;
 		if (!nav || !nav.groups) return this.render_nav_error();
 
+		// render_nav_error replaces #ad-directory's contents wholesale, so a
+		// successful refresh must re-create the pills/panels scaffolding the
+		// shell shipped — otherwise the .find() fills below match nothing and
+		// the directory stays dead until a full page reload.
+		$m.find("#ad-directory").html(
+			'<div class="ad-pills" id="ad-pills"></div><div id="ad-panels"></div>'
+		);
+
 		$m.find("#ad-frequent").html(
 			(nav.frequent || [])
 				.map(
@@ -784,11 +799,15 @@ class OpsDashboard {
 			.on("click", (e) => {
 				const gi = Number($(e.currentTarget).data("group"));
 				this.open_group = this.open_group === gi ? null : gi;
+				// Compare against the post-toggle state, not the clicked index:
+				// collapsing by re-click sets open_group to null, and the pill
+				// just closed must not keep claiming aria-expanded="true".
+				const open = this.open_group;
 				$m.find(".ad-pill").each(function () {
-					$(this).attr("aria-expanded", String(Number($(this).data("group")) === gi));
+					$(this).attr("aria-expanded", String(Number($(this).data("group")) === open));
 				});
 				$m.find(".ad-panel").removeClass("on");
-				if (this.open_group !== null) $m.find(`#ad-panel-${gi}`).addClass("on");
+				if (open !== null) $m.find(`#ad-panel-${gi}`).addClass("on");
 			});
 	}
 
@@ -947,7 +966,7 @@ class OpsDashboard {
 					r.requested_level || "—"
 				)}</td>
                 <td>${badge(r.status)}</td>
-                <td>${this.esc((r.modified || "").split(".")[0])}</td>
+                <td>${this.esc((r.creation || "").split(".")[0])}</td>
             </tr>`
 			)
 			.join("");
