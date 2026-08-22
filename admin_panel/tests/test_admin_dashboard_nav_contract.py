@@ -322,6 +322,45 @@ def test_dashboard_css_stays_scoped_to_the_page():
 		assert selector.startswith((".fp", "[data-theme=", ".dark")), f"unscoped selector: {selector}"
 
 
+# ── back-to-dashboard button ──────────────────────────────────────────────
+
+BACK_JS = (ADMIN_PANEL / "public" / "js" / "back_to_dashboard.js").read_text()
+HOOKS_PY = (ADMIN_PANEL / "hooks.py").read_text()
+
+
+def _js_string_array(source, name):
+	"""The string literals of a ``const NAME = [ ... ];`` block."""
+	block = re.search(rf"const {name} = \[(.*?)\];", source, re.DOTALL)
+	assert block, f"const {name} missing from back_to_dashboard.js"
+	return re.findall(r'"([^"]+)"', block.group(1))
+
+
+def test_back_button_covers_every_dashboard_destination():
+	"""The include script is one file so a new destination cannot ship
+	without the button — but only while these lists track the registry."""
+	links = all_links()
+
+	assert _js_string_array(BACK_JS, "PAGES") == [link["route"] for link in links if link["kind"] == "page"]
+	assert _js_string_array(BACK_JS, "DOCTYPES") == [
+		link["doctype"] for link in links if link["kind"] == "doctype"
+	]
+
+
+def test_back_button_script_is_included_desk_wide_and_skips_the_dashboard():
+	assert 'app_include_js = "/assets/admin_panel/js/back_to_dashboard.js"' in HOOKS_PY
+	# No button to itself: the dashboard's own route must not be a target.
+	assert '"admin-dashboard"' not in re.search(r"const PAGES = \[.*?\];", BACK_JS, re.DOTALL).group(0)
+	# Navigation must go through the router, not a page reload.
+	assert 'frappe.set_route("admin-dashboard")' in BACK_JS
+	# Injection must hang off the container's "page-change" (fired AFTER
+	# frappe.container.page is updated), never frappe.router.on("change"),
+	# which fires while an async custom-Page render is still in flight and
+	# would inject the button into the page being LEFT — including the
+	# dashboard itself.
+	assert '$(document).on("page-change"' in BACK_JS
+	assert 'frappe.router.on("change"' not in BACK_JS
+
+
 # ── desk landing page ─────────────────────────────────────────────────────
 
 
