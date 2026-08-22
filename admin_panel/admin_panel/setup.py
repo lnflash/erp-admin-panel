@@ -9,6 +9,7 @@ def after_migrate():
 	sync_pages()
 	delete_legacy_pages()
 	ensure_desk_home_page()
+	ensure_public_assets_symlink()
 	seed_allowed_countries()
 
 
@@ -205,3 +206,45 @@ def ensure_desk_home_page():
 		return
 	frappe.db.set_default("desktop:home_page", configured)
 	frappe.db.commit()
+
+
+def _ensure_symlink(link, target):
+	"""Idempotently point ``link`` at ``target``; leave a real directory alone.
+
+	Pure helper (no frappe) so the branch logic is testable with tmp paths.
+	Returns what it did: "created", "repointed", "ok", or "kept-dir".
+	"""
+	import os
+
+	if os.path.islink(link):
+		if os.readlink(link) == target:
+			return "ok"
+		os.remove(link)
+		os.symlink(target, link)
+		return "repointed"
+	if os.path.isdir(link):
+		# Some setups copy assets instead of symlinking; don't fight them.
+		return "kept-dir"
+	os.symlink(target, link)
+	return "created"
+
+
+def ensure_public_assets_symlink():
+	"""Make ``sites/assets/admin_panel`` exist on the runtime volume.
+
+	nginx serves ``/assets`` with ``root .../sites`` (``try_files $uri``), and
+	in the k8s deployment ``sites/`` is the shared PVC mounted OVER the
+	image's own sites dir. ``bench build`` wrote the assets symlink into the
+	image layer at build time — exactly where nginx never looks — so the
+	app's public files 404'd on every environment while frappe/erpnext
+	(provisioned onto the volume at install) served fine. Runs on every
+	migrate, which executes with the PVC mounted; harmless on a plain bench
+	where the link already exists and is correct.
+	"""
+	import os
+
+	bench_path = frappe.utils.get_bench_path()
+	_ensure_symlink(
+		os.path.join(bench_path, "sites", "assets", "admin_panel"),
+		os.path.join(bench_path, "apps", "admin_panel", "admin_panel", "public"),
+	)
