@@ -5,12 +5,20 @@ frappe.pages["admin-dashboard"].on_page_load = function (wrapper) {
 		single_column: true,
 	});
 
-	if (!frappe.user_roles.includes("Accounts Manager")) {
+	// Mirrors admin_panel.api.auth.ADMIN_ROLES — the gate on every endpoint
+	// this page calls. Gating on "Accounts Manager" alone locked Flash Admins
+	// out of a page whose data those same APIs were already serving them, and
+	// this page is now the desk landing page, so the mismatch was the first
+	// thing a Flash Admin would hit on login.
+	const ADMIN_ROLES = ["System Manager", "Accounts Manager", "Flash Admin"];
+	if (!ADMIN_ROLES.some((role) => frappe.user_roles.includes(role))) {
 		page.main.html(`
             <div class="text-center mt-5">
                 <div class="alert alert-warning">
                     <h4>Access Denied</h4>
-                    <p>You do not have permission to access this page. Please contact your administrator to get the "Accounts Manager" role.</p>
+                    <p>You do not have permission to access this page. Please contact your administrator to get one of these roles: ${ADMIN_ROLES.join(
+						", "
+					)}.</p>
                 </div>
             </div>
         `);
@@ -137,6 +145,27 @@ const FP_CSS = `
     .fp .ad-tool-title { font-weight: 600; font-size: 13px; color: var(--fp-ink); }
     .fp .ad-tool-desc { color: var(--fp-ink2); font-size: 11.5px; margin-top: 1px; }
 
+    /* revenue strip */
+    .fp .ad-rev { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+          gap: 14px; margin-bottom: 8px; }
+    .fp .ad-rev .fp-tile { cursor: default; min-height: 108px; }
+    .fp .ad-rev .fp-tile:hover { border-color: var(--fp-line); }
+    .fp .ad-rev .fp-tile.lead { border-color: var(--fp-accent); }
+    .fp .ad-revsplit { color: var(--fp-ink2); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .fp .ad-revnote { color: var(--fp-ink3); font-size: 11.5px; margin: 0 0 20px; }
+    .fp .ad-revnote strong { color: var(--fp-warn); font-weight: 600; }
+
+    /* link directory */
+    .fp .ad-navgroup { margin-bottom: 20px; }
+    .fp .ad-navgroup:last-child { margin-bottom: 30px; }
+    .fp .ad-freqrow { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
+    .fp .ad-freqchip { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+          background: var(--fp-surface); border: 1px solid var(--fp-line); border-radius: 999px;
+          padding: 6px 13px 6px 7px; font-size: 12.5px; font-weight: 600; color: var(--fp-ink);
+          transition: border-color 0.15s; }
+    .fp .ad-freqchip:hover { border-color: var(--fp-accent); }
+    .fp .ad-freqchip .ad-tool-icon { width: 24px; height: 24px; border-radius: 7px; font-size: 9.5px; }
+
     /* upgrade requests table (existing flow, restyled) */
     .fp .fp-tablecard { padding: 0; overflow: hidden; margin-bottom: 40px; }
     .fp .fp-tablehead { display: flex; justify-content: space-between; align-items: center;
@@ -171,6 +200,8 @@ class OpsDashboard {
 		this.page = page;
 		this.stats = null;
 		this.pulse = null;
+		this.revenue = null;
+		this.nav = null;
 		this.render_shell();
 		this.load();
 	}
@@ -192,6 +223,42 @@ class OpsDashboard {
 				this.render_requests();
 			},
 		});
+		frappe.call({
+			method: "admin_panel.api.revenue.get_revenue_summary",
+			callback: (r) => {
+				this.revenue = r.message || null;
+				this.render_revenue();
+			},
+			error: () => this.render_revenue_error(),
+		});
+		frappe.call({
+			method: "admin_panel.api.nav.get_nav",
+			callback: (r) => {
+				this.nav = r.message || null;
+				this.render_nav();
+			},
+			error: () => this.render_nav_error(),
+		});
+	}
+
+	open_tile(el) {
+		const route = $(el).data("route");
+		if (!route) return;
+		this.record_visit(route);
+		frappe.set_route(route);
+	}
+
+	/* Tile clicks feed the frequently-used ranking. Frappe's own recorder
+	   (router_history.js) drops single-segment routes, so every custom Page
+	   here would otherwise never register a single visit. Fire-and-forget:
+	   navigation must not wait on, or be blocked by, bookkeeping. */
+	record_visit(route) {
+		frappe.call({
+			method: "admin_panel.api.nav.record_visit",
+			args: { route: route },
+			callback: () => {},
+			error: () => {},
+		});
 	}
 
 	refresh() {
@@ -207,6 +274,12 @@ class OpsDashboard {
                     <span id="fp-census-age"><span class="fp-dot"></span>Loading pulse…</span>
                     <span class="fp-refresh" id="fp-refresh" role="button" tabindex="0">Refresh</span>
                 </div>
+                <p class="ad-section-title">Revenue · Flash fees</p>
+                <div class="ad-rev" id="ad-revenue">
+                    <div class="fp-empty">Loading revenue…</div>
+                </div>
+                <p class="ad-revnote" id="ad-revnote"></p>
+                <p class="ad-section-title">Operations</p>
                 <div class="fp-pulse" id="fp-pulse"></div>
                 <div class="fp-grid">
                     <div class="fp-card fp-rise">
@@ -219,39 +292,9 @@ class OpsDashboard {
                     </div>
                     <div class="fp-card fp-rise" id="fp-queue"></div>
                 </div>
-                <p class="ad-section-title">Tools</p>
-                <div class="ad-tools">
-                    <div class="ad-tool-card" data-route="/app/account-hub">
-                        <div class="ad-tool-icon">AH</div>
-                        <div><div class="ad-tool-title">Account Hub</div>
-                        <div class="ad-tool-desc">Search, inspect and manage any account</div></div>
-                    </div>
-                    <div class="ad-tool-card" data-route="/app/wallet-census">
-                        <div class="ad-tool-icon">WC</div>
-                        <div><div class="ad-tool-title">Wallet Census</div>
-                        <div class="ad-tool-desc">Live IBEX balances, buckets and CSV export</div></div>
-                    </div>
-                    <div class="ad-tool-card" data-route="/app/transfer-requests">
-                        <div class="ad-tool-icon">TR</div>
-                        <div><div class="ad-tool-title">Transfer Requests</div>
-                        <div class="ad-tool-desc">Cashout and Bridge settlement queue</div></div>
-                    </div>
-                    <div class="ad-tool-card" data-route="/app/bridge-kyc">
-                        <div class="ad-tool-icon">BK</div>
-                        <div><div class="ad-tool-title">Bridge KYC</div>
-                        <div class="ad-tool-desc">Live Bridge KYC status for every customer</div></div>
-                    </div>
-                    <div class="ad-tool-card" data-route="/app/account-management">
-                        <div class="ad-tool-icon">AM</div>
-                        <div><div class="ad-tool-title">Account Management</div>
-                        <div class="ad-tool-desc">Levels, locks and merchant validation</div></div>
-                    </div>
-                    <div class="ad-tool-card" data-route="/app/alert-users">
-                        <div class="ad-tool-icon">AL</div>
-                        <div><div class="ad-tool-title">Alert Users</div>
-                        <div class="ad-tool-desc">Broadcast email or in-app announcements</div></div>
-                    </div>
-                </div>
+                <p class="ad-section-title" id="ad-freq-title" hidden>Frequently used</p>
+                <div class="ad-freqrow" id="ad-frequent"></div>
+                <div id="ad-directory"></div>
                 <div class="fp-card fp-tablecard fp-rise">
                     <div class="fp-tablehead">
                         <h2>Upgrade requests</h2>
@@ -263,8 +306,15 @@ class OpsDashboard {
         `);
 
 		const $m = this.page.main;
-		$m.find(".ad-tool-card").on("click", function () {
-			frappe.set_route($(this).data("route").replace("/app/", ""));
+		// Delegated: the tiles are rendered from the nav registry after the
+		// shell, so a direct .find() binding at shell time would catch none.
+		$m.on("click", ".ad-tool-card, .ad-freqchip", (e) => this.open_tile(e.currentTarget));
+		// The tiles carry role="link" and tabindex="0"; without this they are
+		// announced as links a keyboard user cannot follow.
+		$m.on("keydown", ".ad-tool-card, .ad-freqchip", (e) => {
+			if (e.key !== "Enter" && e.key !== " ") return;
+			e.preventDefault();
+			this.open_tile(e.currentTarget);
 		});
 		$m.find("#fp-refresh").on("click", () => this.refresh());
 		$m.find("#fp-refresh").on("keydown", (e) => {
@@ -319,6 +369,124 @@ class OpsDashboard {
 				'<div class="fp-card fp-empty">Could not load the ops pulse — check the server logs and refresh.</div>'
 			);
 		this.page.main.find("#fp-census-age").html("Pulse unavailable");
+	}
+
+	/* ── revenue ──────────────────────────────── */
+	render_revenue() {
+		const r = this.revenue;
+		const $m = this.page.main;
+		if (!r || !r.windows) return this.render_revenue_error();
+
+		const w = r.windows;
+		const change = r.d30_change_pct;
+		const changeChip =
+			change == null
+				? ""
+				: `<span class="${change >= 0 ? "fp-delta up" : "fp-delta"}">${
+						change >= 0 ? "▲" : "▼"
+				  } ${Math.abs(change).toFixed(1)}% <small>vs prior 30d</small></span>`;
+
+		const tile = (label, win, foot, lead) => `
+            <div class="fp-tile${lead ? " lead" : ""}">
+                <span class="fp-label">${label}</span>
+                <span class="fp-value">${this.money(win.total)}</span>
+                <span class="ad-revsplit">${this.money(win.cashout)} cashout · ${this.money(
+			win.topup
+		)} card</span>
+                <span class="fp-foot">${foot || ""}</span>
+            </div>`;
+
+		$m.find("#ad-revenue").html(
+			[
+				tile("Today", w.today, ""),
+				tile("Month to date", w.mtd, "", true),
+				tile("Last 30 days", w.d30, changeChip),
+				tile("All time", w.all, ""),
+			].join("")
+		);
+
+		// Everything the totals could NOT account for, stated rather than
+		// buried — a Data-typed fee that never got computed reads as absent,
+		// not as zero, and a non-USD fee is never folded into a USD total.
+		const notes = [];
+		const pending = w.all.fee_pending || 0;
+		if (pending) {
+			notes.push(
+				`<strong>${pending} card top-up${
+					pending === 1 ? "" : "s"
+				} with no computed fee</strong> — excluded, not counted as zero`
+			);
+		}
+		const other = w.all.other_currency || {};
+		Object.keys(other).forEach((cur) => {
+			notes.push(
+				`${this.esc(cur)} ${Number(other[cur]).toLocaleString()} in ${this.esc(
+					cur
+				)} fees, reported separately`
+			);
+		});
+		notes.push("Windows run on record creation date; all-time is exact");
+		$m.find("#ad-revnote").html(notes.join(" · "));
+	}
+
+	render_revenue_error() {
+		this.page.main
+			.find("#ad-revenue")
+			.html(
+				'<div class="fp-empty">Could not load revenue — check the server logs and refresh.</div>'
+			);
+		this.page.main.find("#ad-revnote").html("");
+	}
+
+	/* ── link directory ───────────────────────── */
+	render_nav() {
+		const nav = this.nav;
+		const $m = this.page.main;
+		if (!nav || !nav.groups) return this.render_nav_error();
+
+		const card = (link) => `
+            <div class="ad-tool-card" data-route="${this.esc(
+				link.route
+			)}" role="link" tabindex="0">
+                <div class="ad-tool-icon">${this.esc(link.badge)}</div>
+                <div><div class="ad-tool-title">${this.esc(link.label)}</div>
+                <div class="ad-tool-desc">${this.esc(link.desc)}</div></div>
+            </div>`;
+
+		$m.find("#ad-directory").html(
+			nav.groups
+				.map(
+					(g) => `
+            <div class="ad-navgroup">
+                <p class="ad-section-title">${this.esc(g.title)}</p>
+                <div class="ad-tools">${g.links.map(card).join("")}</div>
+            </div>`
+				)
+				.join("")
+		);
+
+		const frequent = nav.frequent || [];
+		$m.find("#ad-freq-title").prop("hidden", frequent.length === 0);
+		$m.find("#ad-frequent").html(
+			frequent
+				.map(
+					(link) => `
+            <span class="ad-freqchip" data-route="${this.esc(
+				link.route
+			)}" role="link" tabindex="0">
+                <span class="ad-tool-icon">${this.esc(link.badge)}</span>${this.esc(link.label)}
+            </span>`
+				)
+				.join("")
+		);
+	}
+
+	render_nav_error() {
+		this.page.main
+			.find("#ad-directory")
+			.html(
+				'<div class="fp-empty">Could not load the link directory — check the server logs and refresh.</div>'
+			);
 	}
 
 	render_pulse() {

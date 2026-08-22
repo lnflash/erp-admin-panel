@@ -4,13 +4,23 @@
  "docstatus": 0,
  "doctype": "Page",
  "idx": 0,
- "modified": "2026-05-08 16:00:00.000000",
+ "modified": "2026-08-21 09:00:00.000000",
  "modified_by": "Administrator",
  "module": "Admin Panel",
  "name": "admin-dashboard",
  "owner": "Administrator",
  "page_name": "admin-dashboard",
- "roles": [],
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "Accounts Manager"
+  },
+  {
+   "role": "Flash Admin"
+  }
+ ],
  "script": null,
  "standard": "Yes",
  "style": null,
