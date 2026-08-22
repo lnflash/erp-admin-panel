@@ -287,8 +287,10 @@ def test_dashboard_renders_tiles_from_the_registry_not_from_markup():
 
 
 def test_dashboard_wires_revenue_at_the_top():
+	"""Anchored on the queue card — a real element — after the dead
+	fp-pulse node that existed only to satisfy this test was removed."""
 	revenue_at = DASHBOARD_JS.index('id="ad-revenue"')
-	pulse_at = DASHBOARD_JS.index('id="fp-pulse"')
+	pulse_at = DASHBOARD_JS.index('id="fp-queue"')
 
 	assert 'method: "admin_panel.api.revenue.get_revenue_summary"' in DASHBOARD_JS
 	assert revenue_at < pulse_at, "revenue must render above the ops pulse"
@@ -384,6 +386,16 @@ def test_requests_timestamp_renders_a_field_the_api_returns():
 	assert '"creation",' in admin_api
 	assert "(r.creation || " in DASHBOARD_JS
 	assert "r.modified" not in DASHBOARD_JS
+
+
+def test_opening_a_destination_closes_the_palette():
+	"""Desk keeps the page wrapper alive across navigation; without this,
+	returning to the dashboard shows the palette still open on a stale
+	query."""
+	open_tile = DASHBOARD_JS[DASHBOARD_JS.index("open_tile(el)") : DASHBOARD_JS.index("record_visit(route)")]
+
+	assert "this.close_palette();" in open_tile
+	assert '#ad-jump-input").val("")' in open_tile
 
 
 def test_palette_searches_label_and_group_and_preselects_first_hit():

@@ -289,6 +289,11 @@ class OpsDashboard {
 	open_tile(el) {
 		const route = $(el).data("route");
 		if (!route) return;
+		// Desk keeps this wrapper alive across navigation — without closing
+		// here, returning to the dashboard would show the palette still open
+		// on the stale query.
+		this.page.main.find("#ad-jump-input").val("");
+		this.close_palette();
 		this.record_visit(route);
 		frappe.set_route(route);
 	}
@@ -324,7 +329,7 @@ class OpsDashboard {
                     <div class="fp-empty">Loading revenue…</div>
                 </div>
                 <p class="ad-revnote" id="ad-revnote"></p>
-                <p class="ad-section-title">Operations <small id="fp-pulse"></small></p>
+                <p class="ad-section-title">Operations</p>
                 <div class="fp-grid">
                     <div class="fp-card fp-rise">
                         <h2>USDT float <span id="fp-float-head"></span></h2>
