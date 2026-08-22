@@ -263,6 +263,10 @@ class OpsDashboard {
 				this.stats = r.message || null;
 				this.render_requests();
 			},
+			error: () => {
+				this.stats = null;
+				this.render_requests();
+			},
 		});
 		frappe.call({
 			method: "admin_panel.api.revenue.get_revenue_summary",

@@ -345,6 +345,25 @@ def test_nav_refresh_recovers_after_a_nav_error():
 	assert rebuild < nav_fn.index('$m.find("#ad-panels").html(')
 
 
+def test_every_dashboard_load_call_handles_transport_errors():
+	"""On a server 500 frappe.call never fires the callback, so a load
+	without an error: handler leaves its card on the shell's "Loading…"
+	forever while the sibling cards show proper error states.
+	get_dashboard_stats was the last straggler — its error path must null
+	this.stats and re-render so render_requests shows its
+	"Could not load upgrade requests." empty state."""
+	load_fn = DASHBOARD_JS[DASHBOARD_JS.index("\tload() {") : DASHBOARD_JS.index("\topen_tile(")]
+	assert load_fn.count("frappe.call({") == 4
+	assert load_fn.count("error: (") == 4, "every dashboard load needs an error: handler"
+	stats_call = load_fn.split('method: "admin_panel.api.admin_api.get_dashboard_stats"', 1)[1].split(
+		"frappe.call({", 1
+	)[0]
+	assert "this.stats = null;" in stats_call
+	assert (
+		stats_call.count("this.render_requests();") == 2
+	), "the stats error path must re-render so the empty state is reachable"
+
+
 def test_chart_refresh_recovers_after_the_empty_state():
 	"""The <2-history empty state replaces .fp-chart-box's contents,
 	destroying #fp-trend and #fp-tt — so render_chart must rebuild that
