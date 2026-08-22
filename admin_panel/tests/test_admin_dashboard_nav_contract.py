@@ -287,8 +287,10 @@ def test_dashboard_renders_tiles_from_the_registry_not_from_markup():
 
 
 def test_dashboard_wires_revenue_at_the_top():
+	"""Anchored on the queue card — a real element — after the dead
+	fp-pulse node that existed only to satisfy this test was removed."""
 	revenue_at = DASHBOARD_JS.index('id="ad-revenue"')
-	pulse_at = DASHBOARD_JS.index('id="fp-pulse"')
+	pulse_at = DASHBOARD_JS.index('id="fp-queue"')
 
 	assert 'method: "admin_panel.api.revenue.get_revenue_summary"' in DASHBOARD_JS
 	assert revenue_at < pulse_at, "revenue must render above the ops pulse"
@@ -302,10 +304,123 @@ def test_dashboard_discloses_what_the_revenue_total_excludes():
 
 
 def test_tile_clicks_are_delegated_and_recorded():
-	"""Tiles render after the shell, so a .find() binding at shell time would
-	catch none of them."""
-	assert '$m.on("click", ".ad-tool-card, .ad-freqchip"' in DASHBOARD_JS
+	"""Rows, palette rows and chips render after the shell, so a .find()
+	binding at shell time would catch none of them."""
+	assert '$m.on("click", ".ad-row, .ad-prow, .ad-freqchip"' in DASHBOARD_JS
 	assert 'method: "admin_panel.api.nav.record_visit"' in DASHBOARD_JS
+
+
+def test_directory_is_collapsed_by_default():
+	"""The fold contract: the default state renders group pills only — no
+	rows — so the whole dashboard fits above a 1440x900 fold. Expansion is
+	user-initiated, one group at a time."""
+	assert "this.open_group = null;" in DASHBOARD_JS
+	assert "aria-expanded=" in DASHBOARD_JS
+	assert 'aria-controls="ad-panel-' in DASHBOARD_JS
+	# One open at a time: toggling clears every panel before opening one.
+	assert '$m.find(".ad-panel").removeClass("on")' in DASHBOARD_JS
+
+
+def test_pill_aria_expanded_tracks_the_post_toggle_state():
+	"""Collapsing by re-click sets open_group to null; the aria-expanded sync
+	must compare each pill against that POST-toggle state, not the raw
+	clicked index — comparing against the clicked index leaves the pill just
+	closed claiming aria-expanded="true" (accent border, rotated chevron,
+	and a lie to screen readers) while its panel is gone."""
+	assert "const open = this.open_group;" in DASHBOARD_JS
+	assert '$(this).attr("aria-expanded", String(Number($(this).data("group")) === open));' in DASHBOARD_JS
+	assert 'String(Number($(this).data("group")) === gi)' not in DASHBOARD_JS
+
+
+def test_nav_refresh_recovers_after_a_nav_error():
+	"""render_nav_error replaces #ad-directory's contents wholesale,
+	destroying the #ad-pills / #ad-panels containers the shell created — so
+	a successful render_nav must re-create that scaffolding before filling
+	it, or one failed get_nav kills the directory until a full page reload
+	(with the error message telling the user to refresh, no less)."""
+	nav_fn = DASHBOARD_JS[DASHBOARD_JS.index("render_nav() {") : DASHBOARD_JS.index("render_nav_error() {")]
+	rebuild = nav_fn.index(
+		'$m.find("#ad-directory").html(\n'
+		'\t\t\t\'<div class="ad-pills" id="ad-pills"></div><div id="ad-panels"></div>\''
+	)
+	assert rebuild < nav_fn.index('$m.find("#ad-pills").html(')
+	assert rebuild < nav_fn.index('$m.find("#ad-panels").html(')
+
+
+def test_every_dashboard_load_call_handles_transport_errors():
+	"""On a server 500 frappe.call never fires the callback, so a load
+	without an error: handler leaves its card on the shell's "Loading…"
+	forever while the sibling cards show proper error states.
+	get_dashboard_stats was the last straggler — its error path must null
+	this.stats and re-render so render_requests shows its
+	"Could not load upgrade requests." empty state."""
+	load_fn = DASHBOARD_JS[DASHBOARD_JS.index("\tload() {") : DASHBOARD_JS.index("\topen_tile(")]
+	assert load_fn.count("frappe.call({") == 4
+	assert load_fn.count("error: (") == 4, "every dashboard load needs an error: handler"
+	stats_call = load_fn.split('method: "admin_panel.api.admin_api.get_dashboard_stats"', 1)[1].split(
+		"frappe.call({", 1
+	)[0]
+	assert "this.stats = null;" in stats_call
+	assert (
+		stats_call.count("this.render_requests();") == 2
+	), "the stats error path must re-render so the empty state is reachable"
+
+
+def test_chart_refresh_recovers_after_the_empty_state():
+	"""The <2-history empty state replaces .fp-chart-box's contents,
+	destroying #fp-trend and #fp-tt — so render_chart must rebuild that
+	scaffolding before branching, or the first refresh after the second
+	census hits `if (!svg) return` and the trend never charts."""
+	chart_fn = DASHBOARD_JS[DASHBOARD_JS.index("render_chart() {") : DASHBOARD_JS.index("render_queue() {")]
+	rebuild = chart_fn.index('\'<svg id="fp-trend"')
+	assert '<div class="fp-tt" id="fp-tt"></div>' in chart_fn
+	assert rebuild < chart_fn.index("if (!svg) return;")
+	assert rebuild < chart_fn.index("history.length < 2")
+
+
+def test_requests_timestamp_renders_a_field_the_api_returns():
+	"""get_dashboard_stats selects `creation`, not `modified`;
+	frappe.get_all returns only requested fields, so a cell reading
+	r.modified is blank by construction in every row of the glance table."""
+	admin_api = (ADMIN_PANEL / "api" / "admin_api.py").read_text()
+	assert '"creation",' in admin_api
+	assert "(r.creation || " in DASHBOARD_JS
+	assert "r.modified" not in DASHBOARD_JS
+
+
+def test_opening_a_destination_closes_the_palette():
+	"""Desk keeps the page wrapper alive across navigation; without this,
+	returning to the dashboard shows the palette still open on a stale
+	query."""
+	open_tile = DASHBOARD_JS[DASHBOARD_JS.index("open_tile(el)") : DASHBOARD_JS.index("record_visit(route)")]
+
+	assert "this.close_palette();" in open_tile
+	assert '#ad-jump-input").val("")' in open_tile
+
+
+def test_palette_searches_label_and_group_and_preselects_first_hit():
+	assert "x.label.toLowerCase().includes(q) || g.title.toLowerCase().includes(q)" in DASHBOARD_JS
+	assert "this.pal_sel = 0;" in DASHBOARD_JS
+
+
+def test_slash_shortcut_is_namespaced_and_guarded():
+	"""Desk keeps page wrappers alive after navigation — an unguarded
+	document handler would steal "/" on every OTHER desk page, and inside
+	dialogs and text fields. Same trap class the drawer Escape handlers pin
+	(test_drawer_escape_handlers_guard_dialog_and_page_visibility)."""
+	assert '$(document).on("keydown.ad_dashboard"' in DASHBOARD_JS
+	assert '$(document).off("keydown.ad_dashboard")' in DASHBOARD_JS
+	assert "if (window.cur_dialog) return;" in DASHBOARD_JS
+	assert 'if (!this.page.wrapper.is(":visible")) return;' in DASHBOARD_JS
+	assert "/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable" in DASHBOARD_JS
+
+
+def test_view_all_routes_to_account_management_and_is_recorded():
+	"""The dashboard table is a glance (top 3); the full queue lives in
+	Account Management, and the jump there must feed the frequency ranking
+	like any other tile."""
+	assert 'this.record_visit("account-management");' in DASHBOARD_JS
+	assert 'frappe.set_route("account-management");' in DASHBOARD_JS
 
 
 def test_dashboard_css_stays_scoped_to_the_page():
