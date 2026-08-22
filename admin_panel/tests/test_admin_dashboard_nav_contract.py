@@ -302,10 +302,46 @@ def test_dashboard_discloses_what_the_revenue_total_excludes():
 
 
 def test_tile_clicks_are_delegated_and_recorded():
-	"""Tiles render after the shell, so a .find() binding at shell time would
-	catch none of them."""
-	assert '$m.on("click", ".ad-tool-card, .ad-freqchip"' in DASHBOARD_JS
+	"""Rows, palette rows and chips render after the shell, so a .find()
+	binding at shell time would catch none of them."""
+	assert '$m.on("click", ".ad-row, .ad-prow, .ad-freqchip"' in DASHBOARD_JS
 	assert 'method: "admin_panel.api.nav.record_visit"' in DASHBOARD_JS
+
+
+def test_directory_is_collapsed_by_default():
+	"""The fold contract: the default state renders group pills only — no
+	rows — so the whole dashboard fits above a 1440x900 fold. Expansion is
+	user-initiated, one group at a time."""
+	assert "this.open_group = null;" in DASHBOARD_JS
+	assert "aria-expanded=" in DASHBOARD_JS
+	assert 'aria-controls="ad-panel-' in DASHBOARD_JS
+	# One open at a time: toggling clears every panel before opening one.
+	assert '$m.find(".ad-panel").removeClass("on")' in DASHBOARD_JS
+
+
+def test_palette_searches_label_and_group_and_preselects_first_hit():
+	assert "x.label.toLowerCase().includes(q) || g.title.toLowerCase().includes(q)" in DASHBOARD_JS
+	assert "this.pal_sel = 0;" in DASHBOARD_JS
+
+
+def test_slash_shortcut_is_namespaced_and_guarded():
+	"""Desk keeps page wrappers alive after navigation — an unguarded
+	document handler would steal "/" on every OTHER desk page, and inside
+	dialogs and text fields. Same trap class the drawer Escape handlers pin
+	(test_drawer_escape_handlers_guard_dialog_and_page_visibility)."""
+	assert '$(document).on("keydown.ad_dashboard"' in DASHBOARD_JS
+	assert '$(document).off("keydown.ad_dashboard")' in DASHBOARD_JS
+	assert "if (window.cur_dialog) return;" in DASHBOARD_JS
+	assert 'if (!this.page.wrapper.is(":visible")) return;' in DASHBOARD_JS
+	assert "/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable" in DASHBOARD_JS
+
+
+def test_view_all_routes_to_account_management_and_is_recorded():
+	"""The dashboard table is a glance (top 3); the full queue lives in
+	Account Management, and the jump there must feed the frequency ranking
+	like any other tile."""
+	assert 'this.record_visit("account-management");' in DASHBOARD_JS
+	assert 'frappe.set_route("account-management");' in DASHBOARD_JS
 
 
 def test_dashboard_css_stays_scoped_to_the_page():

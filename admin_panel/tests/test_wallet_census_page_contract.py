@@ -105,11 +105,15 @@ def test_dashboard_renders_pulse_layer():
 	assert "admin_panel.api.pulse.get_dashboard_pulse" in js
 	assert 'id="fp-trend"' in js
 	assert "USDT float" in js
-	assert "Cashouts needing action" in js
-	# existing flows preserved
+	# The queue card: cashouts + upgrades merged under one glanceable head.
+	assert "Needs you" in js
+	# existing flows preserved. The table's smart-search was deliberately
+	# removed in the above-the-fold redesign: the jump palette and Account
+	# Hub cover search, and the table shows top-3 with a "View all" instead.
 	assert "admin_panel.api.admin_api.get_dashboard_stats" in js
 	assert "account_hub_query" in js
-	assert "ad-smart-search" in js
+	assert "ad-view-all" in js
+	assert "ad-smart-search" not in js
 	# hash hrefs get eaten by the desk router ("Page #x not found") — tiles
 	# must use data-scroll or /app/ routes
 	assert 'href="#fp-' not in js
