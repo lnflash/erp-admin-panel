@@ -19,11 +19,14 @@ def ensure_roles():
 	The Account Upgrade Request permissions and the require_admin decorator
 	reference "Flash Admin"; without the Role record it cannot be assigned.
 	"""
-	for role_name in ("Flash Admin",):
+	# (role_name, desk_access) — "Support Lookup" gates the nostr-dm-bridge's
+	# support contact relay (api.support_lookup); its service user never needs
+	# the desk.
+	for role_name, desk_access in (("Flash Admin", 1), ("Support Lookup", 0)):
 		if not frappe.db.exists("Role", role_name):
 			role = frappe.new_doc("Role")
 			role.role_name = role_name
-			role.desk_access = 1
+			role.desk_access = desk_access
 			role.flags.ignore_permissions = True
 			role.insert()
 	frappe.db.commit()
