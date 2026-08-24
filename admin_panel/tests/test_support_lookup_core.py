@@ -69,9 +69,7 @@ def test_tolerates_missing_blocks():
 def test_tolerates_null_owner_and_email():
 	# Partial responses (allow_not_found lookup semantics) can null out
 	# owner.email on a dangling Kratos identity.
-	slim = slim_support_contact(
-		{"npub": "npub1x", "owner": {"phone": "+18765550100", "email": None}}
-	)
+	slim = slim_support_contact({"npub": "npub1x", "owner": {"phone": "+18765550100", "email": None}})
 	assert slim["phone"] == "+18765550100"
 	assert slim["email"] is None
 	assert slim["emailVerified"] is None
