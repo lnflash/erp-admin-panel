@@ -62,15 +62,37 @@ def test_the_real_cap_buckets_on_the_authenticated_caller():
 	assert "_enforce_caller_quota()" in ENDPOINT_SRC, "the quota must be called by the endpoint"
 
 
-def test_npub_is_validated_before_the_audit_log_and_the_upstream_call():
+def test_npub_is_validated_before_it_is_logged_or_sent_upstream():
 	# The npub is caller-controlled and interpolated raw into the audit line;
 	# a newline in it forges entries in the one log that answers "which
 	# accounts were exposed". Ordering is the whole guarantee.
 	assert re.search(r"NPUB_RE\s*=\s*re\.compile\(", ENDPOINT_SRC), "npub must have a format guard"
 	fn = re.search(r"\ndef get_support_contact_by_npub\(npub\):(.*)", ENDPOINT_SRC, re.S).group(1)
 	guard = fn.index("_reject_malformed_npub(npub)")
-	assert guard < fn.index("frappe.logger()"), "validate before anything is logged"
+	# Every log call that interpolates the npub, wherever it sits in the body.
+	npub_lines = [m.start() for m in re.finditer(r"_audit_logger\(\)\.\w+\(\s*f?\"[^\"]*\{npub\}", fn)]
+	assert npub_lines, "expected the audit lines to name the npub"
+	assert guard < min(npub_lines), "validate before the npub reaches a log line"
 	assert guard < fn.index("GraphQLClient("), "validate before the upstream round-trip"
+
+
+def test_the_caller_quota_is_charged_before_validation():
+	# Malformed input must not be free: the quota is what bounds a leaked
+	# bridge key, and it buckets on the session user without touching `npub`,
+	# so running it first costs an enumerator nothing in forgery terms.
+	fn = re.search(r"\ndef get_support_contact_by_npub\(npub\):(.*)", ENDPOINT_SRC, re.S).group(1)
+	assert fn.index("_enforce_caller_quota()") < fn.index("_reject_malformed_npub(npub)")
+
+
+def test_the_audit_logger_sets_its_own_level():
+	# frappe.logger() defaults to ERROR off a dev server, so INFO audit
+	# records are dropped on the cluster unless the level is raised here.
+	assert re.search(r"logger\.setLevel\(logging\.INFO\)", ENDPOINT_SRC)
+	assert re.search(
+		r'frappe\.logger\(\s*"support_lookup"', ENDPOINT_SRC
+	), "the audit logger needs its own module name, not the shared default file"
+	fn = re.search(r"\ndef get_support_contact_by_npub\(npub\):(.*)", ENDPOINT_SRC, re.S).group(1)
+	assert "frappe.logger()" not in fn, "bare frappe.logger() writes nothing at INFO in prod"
 
 
 def test_transport_failures_are_caught_alongside_graphql_errors():

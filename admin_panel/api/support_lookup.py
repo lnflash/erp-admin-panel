@@ -6,6 +6,7 @@ the cluster. This endpoint is the narrow, authenticated bridge between the
 two: npub in, identity card out. See support_lookup_core for the shape.
 """
 
+import logging
 import re
 import time
 
@@ -81,6 +82,34 @@ SUPPORT_CONTACT_BY_NPUB_QUERY = """
 """
 
 
+def _audit_logger():
+	"""The audit logger, at a level that actually emits.
+
+	`frappe.logger()` sets the level to `frappe.log_level or
+	default_log_level`, and frappe defines `default_log_level = WARNING if
+	frappe._dev_server else ERROR` (frappe/utils/logger.py). `log_level` is
+	initialised to None, nothing in frappe or this app ever calls
+	`set_log_level`, and DEV_SERVER is unset in the frappe/erpnext image — so
+	on the cluster the effective threshold is ERROR and every INFO record
+	here would be discarded before reaching a handler. Hence the explicit
+	setLevel: without it this "audit trail" writes nothing in the one
+	environment where it matters.
+
+	The module name also gives it its own file rather than interleaving
+	PII-bearing lines into the shared `logs/frappe.log`, where unrelated
+	frappe chatter would rotate them away.
+
+	Caveat for whoever runs the post-compromise investigation: this is still
+	a file under `logs/` on a pod with no PVC, so it is pod-lifetime only.
+	Shipping these lines to a durable sink is the open follow-up.
+	"""
+	# frappe.logger caches by module name and sets the level only when it
+	# first builds the logger, so this setLevel sticks for the worker.
+	logger = frappe.logger("support_lookup", max_size=1_000_000, file_count=20)
+	logger.setLevel(logging.INFO)
+	return logger
+
+
 def _cache():
 	"""frappe.cache is a function on v14 and a bound RedisWrapper on v15."""
 	cache = getattr(frappe, "cache", None)
@@ -108,7 +137,7 @@ def _enforce_caller_quota():
 	count = cache.incrby(key, 1)
 	cache.expire(key, SUPPORT_LOOKUP_RATE_WINDOW)
 	if count > SUPPORT_LOOKUP_RATE_LIMIT:
-		frappe.logger().warning(
+		_audit_logger().warning(
 			f"support_lookup quota exceeded by {frappe.session.user} ({count} in window {window})"
 		)
 		frappe.response["http_status_code"] = 429
@@ -118,8 +147,8 @@ def _enforce_caller_quota():
 def _reject_malformed_npub(npub):
 	"""True if the caller gets a 400 instead of a lookup.
 
-	Two reasons this runs before anything else. The audit line below
-	interpolates the npub raw, so an unvalidated value containing a newline
+	Two reasons this runs before the audit line and the upstream call. That
+	line interpolates the npub raw, so an unvalidated value containing a newline
 	lets the caller forge a complete, plausible log entry for a different
 	account attributed to a different user — in the one log that answers
 	"which accounts were exposed" after a bridge-key compromise, writable by
@@ -140,16 +169,21 @@ def _reject_malformed_npub(npub):
 @handle_api_errors
 def get_support_contact_by_npub(npub):
 	"""Resolve a Nostr npub to the identity fields a Chatwoot contact card needs."""
+	# Quota first: otherwise malformed input is free, and a leaked bridge key
+	# can stream unlimited garbage npubs through whitelist auth and
+	# frappe.get_roles without moving a counter or writing a line. The helper
+	# never touches `npub`, so nothing caller-controlled is interpolated
+	# before validation and the forged-audit-line guarantee still holds.
+	_enforce_caller_quota()
 	if _reject_malformed_npub(npub):
 		return {"error": "invalid npub"}
-	_enforce_caller_quota()
 
 	# Audit trail: this read turns a public identifier into phone + email and
 	# its caller sits outside the cluster. After a bridge-key compromise this
 	# log is the only way to answer "which accounts were exposed" — so the
 	# attempt is recorded BEFORE the upstream call. A burst of enumeration
 	# during an upstream outage must still name every npub that was probed.
-	frappe.logger().info(f"support_lookup attempt npub={npub} by {frappe.session.user}")
+	_audit_logger().info(f"support_lookup attempt npub={npub} by {frappe.session.user}")
 
 	client = GraphQLClient(jwt_roles=UPSTREAM_JWT_ROLES)
 	try:
@@ -167,11 +201,11 @@ def get_support_contact_by_npub(npub):
 		# itself ("500 Server Error ... for url: <flash_admin_api_url>").
 		# execute_query calls raise_for_status(), so both are live paths.
 		# Keep the detail in the cluster log.
-		frappe.logger().error(f"support_lookup upstream error for npub={npub}: {e}")
+		_audit_logger().error(f"support_lookup upstream error for npub={npub}: {e}")
 		frappe.response["http_status_code"] = 502
 		return {"error": "lookup failed"}
 
-	frappe.logger().info(f"support_lookup npub={npub} by {frappe.session.user} found={account is not None}")
+	_audit_logger().info(f"support_lookup npub={npub} by {frappe.session.user} found={account is not None}")
 
 	if account is None:
 		frappe.response["http_status_code"] = 404

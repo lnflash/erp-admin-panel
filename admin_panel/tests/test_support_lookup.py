@@ -22,6 +22,7 @@ test, mirroring test_admin_api_send_user_alert.py.
 """
 
 import inspect
+import logging
 import re
 import sys
 import types
@@ -173,25 +174,56 @@ class FakeCache:
 		self.expires[key] = seconds
 
 
+class RecordingLoggers:
+	"""Stands in for frappe.logger(), including the level that hides records.
+
+	Real frappe hands back a logger set to `frappe.log_level or
+	default_log_level`, and off a dev server that default is ERROR — which is
+	why a bare `frappe.logger().info(...)` writes nothing on the cluster. So
+	the logger handed out here starts at ERROR too, and records are captured
+	through a handler rather than by monkeypatching `.info`. A module that
+	stops raising its own level therefore loses its audit lines HERE, in the
+	log-content assertions below, instead of only in production.
+	"""
+
+	def __init__(self, sink):
+		self.sink = sink
+		self.made = []
+		self.loggers = {}
+
+	def __call__(self, module=None, **kwargs):
+		self.made.append((module, kwargs))
+		if module not in self.loggers:
+			logger = logging.getLogger(f"test-support-lookup-{module}")
+			logger.handlers[:] = []
+			logger.addHandler(_SinkHandler(self.sink))
+			logger.propagate = False
+			# frappe sets the level once, when it first builds the logger.
+			logger.setLevel(logging.ERROR)
+			self.loggers[module] = logger
+		return self.loggers[module]
+
+
+class _SinkHandler(logging.Handler):
+	def __init__(self, sink):
+		super().__init__(level=logging.NOTSET)
+		self.sink = sink
+
+	def emit(self, record):
+		self.sink[record.levelname.lower()].append(record.getMessage())
+
+
 @pytest.fixture()
 def env(monkeypatch):
 	"""Stub the frappe surfaces the endpoint touches and record what it does."""
 	response = {}
 	logs = {"info": [], "error": [], "warning": []}
+	logger_factory = RecordingLoggers(logs)
 	cache = FakeCache()
 
 	monkeypatch.setattr(support_lookup.frappe, "response", response, raising=False)
 	monkeypatch.setattr(support_lookup.frappe, "cache", cache, raising=False)
-	monkeypatch.setattr(
-		support_lookup.frappe,
-		"logger",
-		lambda: types.SimpleNamespace(
-			info=logs["info"].append,
-			error=logs["error"].append,
-			warning=logs["warning"].append,
-		),
-		raising=False,
-	)
+	monkeypatch.setattr(support_lookup.frappe, "logger", logger_factory, raising=False)
 	# A real service user, not "Administrator" — so require_roles' role lookup
 	# actually runs instead of short-circuiting.
 	monkeypatch.setattr(
@@ -208,7 +240,7 @@ def env(monkeypatch):
 		monkeypatch.setattr(support_lookup, "GraphQLClient", client.factory)
 		return client
 
-	return types.SimpleNamespace(response=response, logs=logs, cache=cache, use=use)
+	return types.SimpleNamespace(response=response, logs=logs, cache=cache, use=use, loggers=logger_factory)
 
 
 # --- input validation (must run before the log and before the upstream call) ---
@@ -422,6 +454,62 @@ def test_quota_rejection_is_not_bucketed_per_npub(env):
 		support_lookup.get_support_contact_by_npub("npub1" + "q" * 56 + suffix)
 	with pytest.raises(support_lookup.frappe.RateLimitExceededError):
 		support_lookup.get_support_contact_by_npub(NPUB)
+
+
+def test_malformed_npub_still_costs_the_caller_quota(env):
+	# Otherwise garbage is free: a leaked bridge key can stream unlimited
+	# invalid npubs through whitelist auth and frappe.get_roles without moving
+	# a counter or writing a line anywhere.
+	env.use(FakeClient(result=ACCOUNT))
+	for _ in range(support_lookup.SUPPORT_LOOKUP_RATE_LIMIT):
+		support_lookup.get_support_contact_by_npub("not-an-npub")
+
+	with pytest.raises(support_lookup.frappe.RateLimitExceededError):
+		support_lookup.get_support_contact_by_npub(NPUB)
+
+
+def test_the_quota_window_rolls_over(env, monkeypatch):
+	# The counter is keyed by window number so it expires on its own. If that
+	# key ever became constant, the honest bridge would 429 forever after its
+	# 120th lifetime lookup and every Chatwoot card would silently degrade to
+	# "Unavailable" — the bridge treats any relay failure as enrich-skip.
+	env.use(FakeClient(result=ACCOUNT))
+	now = float(CREATED_AT)
+	monkeypatch.setattr(support_lookup.time, "time", lambda: now)
+
+	for _ in range(support_lookup.SUPPORT_LOOKUP_RATE_LIMIT):
+		support_lookup.get_support_contact_by_npub(NPUB)
+	with pytest.raises(support_lookup.frappe.RateLimitExceededError):
+		support_lookup.get_support_contact_by_npub(NPUB)
+
+	now += support_lookup.SUPPORT_LOOKUP_RATE_WINDOW
+	assert support_lookup.get_support_contact_by_npub(NPUB)["npub"] == NPUB
+
+
+# --- audit logger ---
+
+
+def test_the_audit_logger_actually_emits_info(env):
+	# frappe.logger() hands back a logger set to ERROR off a dev server, so a
+	# bare frappe.logger().info(...) writes nothing on the cluster — where this
+	# is the only record of which accounts a leaked bridge key read.
+	env.use(FakeClient(result=ACCOUNT))
+	support_lookup.get_support_contact_by_npub(NPUB)
+
+	logger = support_lookup._audit_logger()
+	assert logger.isEnabledFor(logging.INFO)
+	assert env.logs["info"], "the audit lines have to survive the level"
+
+
+def test_the_audit_logger_gets_its_own_file(env):
+	# Its own module name keeps PII-bearing lines out of the shared
+	# logs/frappe.log, where unrelated frappe chatter would rotate them away.
+	env.use(FakeClient(result=ACCOUNT))
+	support_lookup.get_support_contact_by_npub(NPUB)
+
+	modules = {module for module, _ in env.loggers.made}
+	assert modules == {"support_lookup"}
+	assert all(kwargs.get("file_count") for _, kwargs in env.loggers.made)
 
 
 # --- rate limit decorator (second, weaker layer) ---
