@@ -482,9 +482,10 @@ def test_malformed_npub_still_costs_the_caller_quota(env):
 
 def test_the_quota_window_rolls_over(env, monkeypatch):
 	# The counter is keyed by window number so it expires on its own. If that
-	# key ever became constant, the honest bridge would 429 forever after its
-	# SUPPORT_LOOKUP_RATE_LIMIT-th lifetime lookup and every Chatwoot card would silently degrade to
-	# "Unavailable" — the bridge treats any relay failure as enrich-skip.
+	# key ever became constant, the honest bridge would 429 forever once it hit
+	# SUPPORT_LOOKUP_RATE_LIMIT lifetime lookups, and every Chatwoot card would
+	# silently degrade to "Unavailable" — the bridge treats any relay failure
+	# as enrich-skip.
 	env.use(FakeClient(result=ACCOUNT))
 	now = float(CREATED_AT)
 	monkeypatch.setattr(support_lookup.time, "time", lambda: now)
