@@ -252,6 +252,9 @@ def env(monkeypatch):
 	"bad",
 	[
 		pytest.param(FORGED_NPUB, id="newline-forges-an-audit-line"),
+		# Regression pin: with `$` instead of `\Z` this one passes validation —
+		# Python's `$` matches before a trailing newline.
+		pytest.param(NPUB + "\n", id="trailing-newline"),
 		pytest.param(NPUB + " ", id="trailing-space"),
 		pytest.param("npub1" + "q" * 57, id="too-short"),
 		pytest.param("npub1" + "q" * 59, id="too-long"),
@@ -480,7 +483,7 @@ def test_malformed_npub_still_costs_the_caller_quota(env):
 def test_the_quota_window_rolls_over(env, monkeypatch):
 	# The counter is keyed by window number so it expires on its own. If that
 	# key ever became constant, the honest bridge would 429 forever after its
-	# 120th lifetime lookup and every Chatwoot card would silently degrade to
+	# SUPPORT_LOOKUP_RATE_LIMIT-th lifetime lookup and every Chatwoot card would silently degrade to
 	# "Unavailable" — the bridge treats any relay failure as enrich-skip.
 	env.use(FakeClient(result=ACCOUNT))
 	now = float(CREATED_AT)

@@ -36,7 +36,10 @@ UPSTREAM_JWT_ROLES = ("Accounts Manager",)
 # the bech32 charset (no "1", "b", "i" or "o"). Anything else is rejected
 # before it reaches the audit log or the upstream API — see
 # _reject_malformed_npub for why that ordering is the point.
-NPUB_RE = re.compile(r"^npub1[023456789acdefghjklmnpqrstuvwxyz]{58}$")
+# \Z, not $: in Python, $ also matches just before a trailing newline, and a
+# trailing "\n" is precisely the character the audit-line defense exists to
+# keep out.
+NPUB_RE = re.compile(r"^npub1[023456789acdefghjklmnpqrstuvwxyz]{58}\Z")
 
 # The bridge key lives in the environment of an internet-facing support
 # droplet. If it leaks, npubs scraped from public Nostr relays could be walked
@@ -48,13 +51,16 @@ NPUB_RE = re.compile(r"^npub1[023456789acdefghjklmnpqrstuvwxyz]{58}$")
 # The @rate_limit decorator is a second, weaker layer — frappe derives
 # request_ip from the leftmost X-Forwarded-For value (frappe/auth.py), so it
 # binds only callers who cannot pick their own source address, and a proxy
-# pool defeats it. It is kept for cheap pre-auth shedding, not relied on.
+# pool defeats it. It is kept for cheap shedding ahead of the role-gate DB
+# lookup (frappe dispatches whitelisted functions after session auth, so
+# nothing here runs pre-auth), not relied on.
 #
 # Deliberately NOT key="npub" on the decorator: frappe buckets on "<ip>:<key>"
 # when a key is given, which hands an enumerator a fresh allowance for every
-# new npub — exactly the attack. Both caps are sized well above the bridge's
-# real volume (one lookup per new DM thread, and it caches).
-SUPPORT_LOOKUP_RATE_LIMIT = 120
+# new npub — exactly the attack. Both caps are sized above the bridge's real
+# volume (one lookup per new DM thread, and it caches) but kept tight: every
+# unit of headroom over honest traffic is attacker budget after a key leak.
+SUPPORT_LOOKUP_RATE_LIMIT = 30
 SUPPORT_LOOKUP_RATE_WINDOW = 60 * 60
 
 # Identity fields only — never add wallets/balances here (the response
