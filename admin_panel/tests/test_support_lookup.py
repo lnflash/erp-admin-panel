@@ -210,7 +210,9 @@ class _SinkHandler(logging.Handler):
 		self.sink = sink
 
 	def emit(self, record):
-		self.sink[record.levelname.lower()].append(record.getMessage())
+		# setdefault, not [...]: an unexpected level would otherwise raise out
+		# of the logging call and surface as a phantom generic 500.
+		self.sink.setdefault(record.levelname.lower(), []).append(record.getMessage())
 
 
 @pytest.fixture()
@@ -420,10 +422,17 @@ def test_caller_quota_is_bucketed_on_the_authenticated_user(env):
 		support_lookup.get_support_contact_by_npub(NPUB)
 
 	assert env.response["http_status_code"] == 429
+	# The line that fires WHILE a leaked key is being used, not after: it is
+	# the signal that the compromise is live, so it has to survive the level
+	# too. Deleting it must fail here.
+	assert any(
+		"quota exceeded" in line and "nostr-bridge@getflash.io" in line for line in env.logs["warning"]
+	)
 	# The blocked call never reached upstream.
 	assert len(client.calls) == support_lookup.SUPPORT_LOOKUP_RATE_LIMIT
 	assert env.cache.store, "the quota must actually count something"
 	assert all("nostr-bridge@getflash.io" in key for key in env.cache.store)
+	assert env.cache.expires, "the counter key must get a TTL"
 	assert all(ttl == support_lookup.SUPPORT_LOOKUP_RATE_WINDOW for ttl in env.cache.expires.values())
 
 

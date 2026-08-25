@@ -8,6 +8,7 @@ two: npub in, identity card out. See support_lookup_core for the shape.
 
 import logging
 import re
+import sys
 import time
 
 import frappe
@@ -99,14 +100,22 @@ def _audit_logger():
 	PII-bearing lines into the shared `logs/frappe.log`, where unrelated
 	frappe chatter would rotate them away.
 
-	Caveat for whoever runs the post-compromise investigation: this is still
-	a file under `logs/` on a pod with no PVC, so it is pod-lifetime only.
-	Shipping these lines to a durable sink is the open follow-up.
+	The file handlers frappe attaches are pod-local and this deployment
+	mounts no PVC over `logs/`, so a restart or a node drain takes the
+	history with it — exactly when you need it, since rotating the leaked
+	key means redeploying. frappe only adds a stream handler when
+	FRAPPE_STREAM_LOGGING is set, which this cluster does not set, so the
+	stdout handler below is what actually gets these lines off the pod and
+	into the log collector.
 	"""
-	# frappe.logger caches by module name and sets the level only when it
-	# first builds the logger, so this setLevel sticks for the worker.
+	# frappe.logger caches by "<module>-<site>" and sets the level only when
+	# it first builds the logger, so this setLevel sticks for the worker.
 	logger = frappe.logger("support_lookup", max_size=1_000_000, file_count=20)
 	logger.setLevel(logging.INFO)
+	# Guarded: this runs per request, and handlers stack silently.
+	if not getattr(logger, "_audit_stdout", False):
+		logger.addHandler(logging.StreamHandler(sys.stdout))
+		logger._audit_stdout = True
 	return logger
 
 
