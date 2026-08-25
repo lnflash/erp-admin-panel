@@ -154,3 +154,75 @@ def test_jwt_roles_stays_confined_to_the_reviewed_call_site():
 def test_graphql_client_supports_fixed_jwt_roles():
 	assert re.search(r"def __init__\(self, jwt_roles=None\):", CLIENT_SRC)
 	assert re.search(r"self\._jwt_roles or \(frappe\.get_roles\(user\) if user else \[\]\)", CLIENT_SRC)
+
+
+# --- "a leaked bridge key can call exactly this read and nothing else" ---
+#
+# That claim (support_lookup.py, and the reason this endpoint is allowed to
+# exist at all) is a statement about the WHOLE app, not about this file: it
+# holds only while every other whitelisted endpoint refuses a caller whose sole
+# role is "Support Lookup". frappe.whitelist() alone does not — it only requires
+# a session — and frappe.get_all / frappe.get_value, which these endpoints read
+# through, are documented as not checking permissions. So one whitelist added
+# without a role gate hands the bridge key whatever that endpoint reads. The two
+# tests below are the repo-wide pins for the two halves of the claim.
+
+# Every decorator in this app that ends in a frappe.PermissionError for the
+# wrong role. require_admin/require_financial are thin wrappers over
+# require_roles (api/auth.py); a new one must be added here deliberately.
+ROLE_GATE_DECORATORS = ("require_roles", "require_admin", "require_financial")
+
+WHITELISTED_DEF_RE = re.compile(
+	r"@frappe\.whitelist\([^)]*\)[ \t]*\n((?:[ \t]*@[^\n]*\n)*)[ \t]*def[ \t]+(\w+)"
+)
+
+
+def _whitelisted_endpoints():
+	"""(path, function name, the decorators between @whitelist and def)."""
+	for path in sorted(APP_DIR.rglob("*.py")):
+		if "tests" in path.parts:
+			continue
+		src = path.read_text()
+		for match in WHITELISTED_DEF_RE.finditer(src):
+			yield str(path.relative_to(REPO_ROOT)), match.group(2), match.group(1)
+
+
+def test_every_whitelisted_endpoint_is_role_gated():
+	# @frappe.whitelist() makes a function callable by ANY authenticated user
+	# over /api/method/. The bridge service user is an authenticated user.
+	endpoints = list(_whitelisted_endpoints())
+	# Guards the guard: a regex that stopped matching would make this vacuous.
+	assert "get_support_contact_by_npub" in {name for _, name, _ in endpoints}
+	ungated = sorted(
+		f"{path}::{name}"
+		for path, name, decorators in endpoints
+		if not any(d in decorators for d in ROLE_GATE_DECORATORS)
+	)
+	assert not ungated, (
+		"every @frappe.whitelist() endpoint must sit behind a role gate — an ungated "
+		"one is reachable by the nostr-bridge service key, which holds only "
+		f'"Support Lookup": {", ".join(ungated)}'
+	)
+
+
+def test_support_lookup_is_the_only_endpoint_the_bridge_role_can_reach():
+	# The other half: gates exist, but none of them may admit "Support Lookup".
+	# ADMIN_ROLES / FINANCIAL_ROLES back require_admin / require_financial, so
+	# adding the bridge role to either would silently open every admin endpoint
+	# in the app to the droplet's key.
+	auth_src = (API_DIR / "auth.py").read_text()
+	for name in ("ADMIN_ROLES", "FINANCIAL_ROLES"):
+		literal = re.search(rf"{name}\s*=\s*\[([^\]]*)\]", auth_src)
+		assert literal, f"{name} must be a list literal in api/auth.py"
+		assert "Support Lookup" not in literal.group(1), (
+			f'{name} must not include "Support Lookup" — it backs require_admin/'
+			"require_financial across the whole app"
+		)
+
+	offenders = sorted(
+		f"{path}::{name}"
+		for path, name, decorators in _whitelisted_endpoints()
+		if name != "get_support_contact_by_npub"
+		and ("Support Lookup" in decorators or "SUPPORT_LOOKUP_ROLES" in decorators)
+	)
+	assert not offenders, f"the bridge role must gate exactly one endpoint; also on: {', '.join(offenders)}"

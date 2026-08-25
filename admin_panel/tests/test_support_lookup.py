@@ -525,6 +525,77 @@ def test_the_audit_logger_gets_its_own_file(env):
 	assert all(kwargs.get("file_count") for _, kwargs in env.loggers.made)
 
 
+# The process stdout as it stood when support_lookup was imported — i.e. the
+# stream its module-level handler wrapped. Bound here rather than read at
+# assertion time so a future test using capsys cannot make these pass or fail
+# for reasons that have nothing to do with the handler.
+STDOUT_AT_IMPORT = sys.stdout
+
+
+def _stdout_handlers(logger):
+	return [
+		h for h in logger.handlers if isinstance(h, logging.StreamHandler) and h.stream is STDOUT_AT_IMPORT
+	]
+
+
+def test_the_audit_lines_leave_the_pod_on_stdout(env):
+	# The file handlers frappe attaches are pod-local and nothing mounts a PVC
+	# over logs/, so a restart or a node drain takes the history with it —
+	# exactly when it is needed, since rotating a leaked bridge key means
+	# redeploying. stdout is the only durable copy of this trail, so assert on
+	# the real handler list rather than on the test sink, which would stay
+	# green with the stdout handler deleted.
+	env.use(FakeClient(result=ACCOUNT))
+	support_lookup.get_support_contact_by_npub(NPUB)
+
+	assert _stdout_handlers(support_lookup._audit_logger())
+
+
+def test_the_stdout_handler_is_attached_exactly_once(env):
+	# Handlers stack silently, and _audit_logger runs per request. Under
+	# gthread workers a check-then-set guard lets two concurrent first requests
+	# both attach, permanently doubling every audit line — which corrupts the
+	# count in the log that answers "how many lookups did the leaked key make".
+	env.use(FakeClient(result=ACCOUNT))
+	logger = support_lookup._audit_logger()
+	assert len(_stdout_handlers(logger)) == 1
+
+	for _ in range(5):
+		support_lookup._audit_logger()
+	assert len(_stdout_handlers(logger)) == 1
+
+	# Counting alone would still pass with a check-then-set flag, which is what
+	# loses the race. What makes re-attaching safe is that it is the SAME
+	# object every time: addHandler is a membership check under logging's lock,
+	# so identity is the whole guarantee. Pin it.
+	(handler,) = _stdout_handlers(logger)
+	assert handler is support_lookup._AUDIT_STDOUT_HANDLER
+
+
+def test_the_stdout_copy_carries_the_level(env):
+	# With no formatter, logging falls back to "%(message)s" and the stdout
+	# copy is levelless: the "quota exceeded" WARNING — the line that fires
+	# WHILE a leaked key is being abused — would reach the collector looking
+	# exactly like a routine INFO lookup and like a 502 error line. There would
+	# be nothing to alert on.
+	env.use(FakeClient(result=ACCOUNT))
+	(handler,) = _stdout_handlers(support_lookup._audit_logger())
+
+	rendered = handler.format(
+		logging.LogRecord(
+			name="frappe.support_lookup",
+			level=logging.WARNING,
+			pathname=__file__,
+			lineno=1,
+			msg="support_lookup quota exceeded by nostr-bridge@getflash.io",
+			args=(),
+			exc_info=None,
+		)
+	)
+	assert "WARNING" in rendered
+	assert "support_lookup quota exceeded by nostr-bridge@getflash.io" in rendered
+
+
 # --- rate limit decorator (second, weaker layer) ---
 
 ENDPOINT_SRC = inspect.getsource(support_lookup)

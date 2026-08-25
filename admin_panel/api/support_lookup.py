@@ -89,6 +89,27 @@ SUPPORT_CONTACT_BY_NPUB_QUERY = """
 """
 
 
+# Built once, at import, and attached by identity below.
+#
+# Two reasons it is a module-level singleton rather than a fresh handler per
+# request. `Logger.addHandler` is membership-checked under logging's own lock,
+# so re-attaching THIS object is idempotent and race-free; a per-request
+# `logging.StreamHandler(sys.stdout)` guarded by a check-then-set flag is not —
+# frappe serves under gthread gunicorn workers, and two concurrent first
+# requests in a fresh worker can both see the flag unset and both attach,
+# permanently doubling every audit line that worker emits. In the log that
+# answers "how many lookups did the leaked key make", duplicated lines corrupt
+# the count.
+#
+# And the formatter is load-bearing, not cosmetic: with none, logging falls
+# back to "%(message)s" and the stdout copy carries no level, so the "quota
+# exceeded" WARNING — the line that fires WHILE a leaked key is being abused —
+# reaches the collector in a shape indistinguishable from a routine INFO
+# lookup. There would be no level to alert on.
+_AUDIT_STDOUT_HANDLER = logging.StreamHandler(sys.stdout)
+_AUDIT_STDOUT_HANDLER.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+
+
 def _audit_logger():
 	"""The audit logger, at a level that actually emits.
 
@@ -110,18 +131,18 @@ def _audit_logger():
 	mounts no PVC over `logs/`, so a restart or a node drain takes the
 	history with it — exactly when you need it, since rotating the leaked
 	key means redeploying. frappe only adds a stream handler when
-	FRAPPE_STREAM_LOGGING is set, which this cluster does not set, so the
-	stdout handler below is what actually gets these lines off the pod and
-	into the log collector.
+	FRAPPE_STREAM_LOGGING is set, which this cluster does not set, so
+	_AUDIT_STDOUT_HANDLER, attached below, is what actually gets these lines
+	off the pod and into the log collector.
 	"""
 	# frappe.logger caches by "<module>-<site>" and sets the level only when
 	# it first builds the logger, so this setLevel sticks for the worker.
 	logger = frappe.logger("support_lookup", max_size=1_000_000, file_count=20)
 	logger.setLevel(logging.INFO)
-	# Guarded: this runs per request, and handlers stack silently.
-	if not getattr(logger, "_audit_stdout", False):
-		logger.addHandler(logging.StreamHandler(sys.stdout))
-		logger._audit_stdout = True
+	# This runs per request and handlers stack silently, so idempotence
+	# matters. addHandler is a locked membership check, so re-attaching the
+	# same object is a no-op no matter how many workers race here.
+	logger.addHandler(_AUDIT_STDOUT_HANDLER)
 	return logger
 
 
