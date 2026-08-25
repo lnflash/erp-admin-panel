@@ -15,6 +15,9 @@ SUPPORT_CONTACT_KEYS = (
 	"npub",
 	"username",
 	"level",
+	# Unix SECONDS, passed through from upstream's Timestamp! scalar
+	# (flash src/graphql/shared/types/scalar/timestamp.ts), not an ISO
+	# string — new Date(accountCreatedAt) on the bridge side reads 1970.
 	"accountCreatedAt",
 	"phone",
 	"email",

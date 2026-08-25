@@ -49,6 +49,39 @@ def test_rate_limit_is_ip_bucketed_not_npub_bucketed():
 	assert "key=" not in decorator
 
 
+def test_the_real_cap_buckets_on_the_authenticated_caller():
+	# @rate_limit is the weak layer: frappe derives request_ip from the
+	# client-supplied X-Forwarded-For header, and the leaked asset is a frappe
+	# key whose holder picks their own source address. The cap that binds must
+	# meter the session user. Behavior is covered in test_support_lookup.py;
+	# this pins that the guard exists and is wired into the endpoint.
+	body = re.search(r"def _enforce_caller_quota\(\):(.*?)\ndef ", ENDPOINT_SRC, re.S)
+	assert body, "the per-caller quota helper must exist"
+	assert "frappe.session.user" in body.group(1)
+	assert "make_key" in body.group(1), "counter keys must be namespaced like frappe's own"
+	assert "_enforce_caller_quota()" in ENDPOINT_SRC, "the quota must be called by the endpoint"
+
+
+def test_npub_is_validated_before_the_audit_log_and_the_upstream_call():
+	# The npub is caller-controlled and interpolated raw into the audit line;
+	# a newline in it forges entries in the one log that answers "which
+	# accounts were exposed". Ordering is the whole guarantee.
+	assert re.search(r"NPUB_RE\s*=\s*re\.compile\(", ENDPOINT_SRC), "npub must have a format guard"
+	fn = re.search(r"\ndef get_support_contact_by_npub\(npub\):(.*)", ENDPOINT_SRC, re.S).group(1)
+	guard = fn.index("_reject_malformed_npub(npub)")
+	assert guard < fn.index("frappe.logger()"), "validate before anything is logged"
+	assert guard < fn.index("GraphQLClient("), "validate before the upstream round-trip"
+
+
+def test_transport_failures_are_caught_alongside_graphql_errors():
+	# execute_query calls raise_for_status(), so an upstream 5xx arrives as a
+	# requests exception; uncaught, handle_api_errors echoes the internal
+	# GraphQL URL to the support droplet.
+	assert re.search(
+		r"except \(GraphQLError, requests\.exceptions\.RequestException\)", ENDPOINT_SRC
+	), "the upstream guard must cover transport failures, not just GraphQLError"
+
+
 def test_role_gate_includes_the_dedicated_service_role():
 	assert re.search(r"SUPPORT_LOOKUP_ROLES\s*=\s*\[\"Support Lookup\", \*ADMIN_ROLES\]", ENDPOINT_SRC)
 
