@@ -202,3 +202,100 @@ def test_return_type_is_parameterized_not_any():
 	assert "-> T | None" in source
 	assert "from typing import Any" not in source
 	assert "-> Any" not in source
+
+
+# --- the JWT the client actually mints ---
+#
+# _create_jwt_token is the security boundary of the support lookup relay
+# (PR #73): jwt_roles lets an endpoint mint fixed upstream roles instead of the
+# session user's frappe roles, because the bridge's service user deliberately
+# holds no upstream-recognized role. Source-level regex proves the characters
+# exist; these prove the token carries them. If it stopped carrying them the
+# upstream shield would return AuthorizationError and every lookup would 500.
+
+
+def make_minting_client(monkeypatch, jwt_roles, user="ops@getflash.io", frappe_roles=("Flash Admin",)):
+	"""A client wired to capture the payload handed to jwt.encode."""
+	captured = {}
+	role_lookups = []
+
+	def fake_encode(payload, key, algorithm=None):
+		captured["payload"] = payload
+		captured["key"] = key
+		captured["algorithm"] = algorithm
+		return "signed-token"
+
+	def fake_get_roles(u=None):
+		role_lookups.append(u)
+		return list(frappe_roles)
+
+	monkeypatch.setattr(gql.jwt, "encode", fake_encode, raising=False)
+	monkeypatch.setattr(gql.frappe, "session", types.SimpleNamespace(user=user), raising=False)
+	monkeypatch.setattr(gql.frappe, "get_roles", fake_get_roles, raising=False)
+
+	client = GraphQLClient.__new__(GraphQLClient)
+	client.api_key = "test-api-key"
+	client._jwt_roles = list(jwt_roles) if jwt_roles else None
+	return client, captured, role_lookups
+
+
+def test_fixed_jwt_roles_are_what_the_token_carries(monkeypatch):
+	client, captured, role_lookups = make_minting_client(monkeypatch, ("Accounts Manager",))
+
+	token = client._create_jwt_token()
+
+	assert token == "signed-token"
+	assert captured["payload"]["roles"] == ["Accounts Manager"]
+	# The session user is still stamped for upstream audit.
+	assert captured["payload"]["userId"] == "ops@getflash.io"
+	assert captured["payload"]["iss"] == "frappe-admin-panel"
+	assert captured["key"] == "test-api-key"
+	assert captured["algorithm"] == "HS256"
+	# Fixed roles replace the frappe lookup — they never merge with it, or the
+	# service user's real roles would ride along upstream.
+	assert role_lookups == []
+
+
+def test_default_jwt_roles_fall_back_to_the_session_users_frappe_roles(monkeypatch):
+	# The path all ~15 pre-existing endpoints take; jwt_roles must not disturb it.
+	client, captured, role_lookups = make_minting_client(
+		monkeypatch, None, user="ops@getflash.io", frappe_roles=("Flash Admin", "Accounts Manager")
+	)
+
+	client._create_jwt_token()
+
+	assert captured["payload"]["roles"] == ["Flash Admin", "Accounts Manager"]
+	assert captured["payload"]["userId"] == "ops@getflash.io"
+	assert role_lookups == ["ops@getflash.io"]
+
+
+def test_no_session_user_mints_no_roles(monkeypatch):
+	client, captured, role_lookups = make_minting_client(monkeypatch, None, user=None)
+
+	client._create_jwt_token()
+
+	assert captured["payload"]["roles"] == []
+	assert role_lookups == []
+
+
+def test_jwt_token_expires_within_the_hour(monkeypatch):
+	client, captured, _ = make_minting_client(monkeypatch, ("Accounts Manager",))
+	client._create_jwt_token()
+	payload = captured["payload"]
+	assert payload["exp"] - payload["iat"] == 3600
+
+
+def test_constructor_normalizes_jwt_roles_and_defaults_to_none(monkeypatch):
+	monkeypatch.setattr(
+		gql.frappe,
+		"conf",
+		{"flash_admin_api_url": "https://api.example/graphql", "admin_api_key": "k"},
+		raising=False,
+	)
+	# The pooled requests.Session the constructor grabs — no network here.
+	monkeypatch.setattr(gql, "_get_session", lambda: object())
+
+	assert GraphQLClient(jwt_roles=("Accounts Manager",))._jwt_roles == ["Accounts Manager"]
+	assert GraphQLClient()._jwt_roles is None
+	# An empty tuple must mean "no override", not "mint an empty role list".
+	assert GraphQLClient(jwt_roles=())._jwt_roles is None

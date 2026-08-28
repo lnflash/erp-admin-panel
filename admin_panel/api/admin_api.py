@@ -722,18 +722,6 @@ def get_id_document_url(file_key):
 	return {"success": True, "url": url}
 
 
-@frappe.whitelist()
-def get_customer_bank_accounts(customer):
-	accounts = frappe.get_all(
-		"Bank Account",
-		filters={"party_type": "Customer", "party": customer},
-		fields=["name", "account_name", "bank", "bank_account_no", "account"],
-	)
-	for acct in accounts:
-		acct["currency"] = frappe.get_value("Account", acct["account"], "account_currency")
-	return accounts
-
-
 # ── Account Hub helpers ──────────────────────────────────────────
 
 

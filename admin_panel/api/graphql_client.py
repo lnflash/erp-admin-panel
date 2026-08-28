@@ -29,9 +29,15 @@ def _get_session():
 class GraphQLClient:
 	"""GraphQL client for admin API operations with JWT authentication"""
 
-	def __init__(self):
+	def __init__(self, jwt_roles=None):
+		"""jwt_roles: optional fixed roles minted into the upstream JWT instead
+		of the session user's frappe roles. For endpoints whose own frappe-side
+		role gate is the security boundary (e.g. the support lookup relay,
+		whose service user deliberately holds no upstream-recognized role).
+		The session user is still stamped as userId for upstream audit."""
 		self.url = frappe.conf.get("flash_admin_api_url")
 		self.api_key = frappe.conf.get("admin_api_key")
+		self._jwt_roles = list(jwt_roles) if jwt_roles else None
 		self._session = _get_session()
 
 		if not self.url:
@@ -42,7 +48,7 @@ class GraphQLClient:
 	def _create_jwt_token(self) -> str:
 		"""Create JWT token with user context and expiration"""
 		user = frappe.session.user
-		user_roles = frappe.get_roles(user) if user else []
+		user_roles = self._jwt_roles or (frappe.get_roles(user) if user else [])
 		now = int(time.time())
 		payload = {
 			"userId": user,

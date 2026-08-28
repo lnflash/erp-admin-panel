@@ -1,0 +1,228 @@
+"""Source-level contract tests for the support lookup relay endpoint.
+
+Behavioral coverage of the endpoint lives in test_support_lookup.py (stubbed
+frappe, real function calls) and of the JWT it mints in
+test_graphql_client_extract.py. What is left here is the set of invariants no
+call to the function can observe: the decorator stack, the upstream query's
+field set (a privacy boundary — the response leaves the cluster), the Role
+provisioning in setup.py, and the repo-wide confinement of the ``jwt_roles``
+privilege-forging knob.
+"""
+
+import re
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+APP_DIR = REPO_ROOT / "admin_panel"
+API_DIR = APP_DIR / "api"
+SETUP_PY = APP_DIR / "admin_panel" / "setup.py"
+
+ENDPOINT_SRC = (API_DIR / "support_lookup.py").read_text()
+CLIENT_SRC = (API_DIR / "graphql_client.py").read_text()
+
+# jwt_roles mints upstream privilege from a frappe role that may have none of
+# it, so every use is a security decision. graphql_client.py defines it;
+# support_lookup.py is the one reviewed caller. Anything else must be reviewed
+# before it is added here.
+JWT_ROLES_ALLOWED_FILES = {"graphql_client.py", "support_lookup.py"}
+
+
+def test_endpoint_is_whitelisted_behind_the_rate_limit_and_role_gate():
+	# Decorator order matters: whitelist -> rate limit -> role gate -> error
+	# handler -> fn.
+	m = re.search(
+		r"@frappe\.whitelist\(\)\s*\n"
+		r"@rate_limit\([^)]*\)\s*\n"
+		r"@require_roles\(SUPPORT_LOOKUP_ROLES\)\s*\n"
+		r"@handle_api_errors\s*\n"
+		r"def get_support_contact_by_npub\(",
+		ENDPOINT_SRC,
+	)
+	assert m, "get_support_contact_by_npub must be rate limited and whitelisted behind SUPPORT_LOOKUP_ROLES"
+
+
+def test_rate_limit_is_ip_bucketed_not_npub_bucketed():
+	# frappe buckets on "<ip>:<key>" when a key is given, which would hand an
+	# enumerator a fresh allowance per npub — the opposite of the point.
+	decorator = re.search(r"@rate_limit\(([^)]*)\)", ENDPOINT_SRC).group(1)
+	assert "ip_based=True" in decorator
+	assert "key=" not in decorator
+
+
+def test_the_real_cap_buckets_on_the_authenticated_caller():
+	# @rate_limit is the weak layer: frappe derives request_ip from the
+	# client-supplied X-Forwarded-For header, and the leaked asset is a frappe
+	# key whose holder picks their own source address. The cap that binds must
+	# meter the session user. Behavior is covered in test_support_lookup.py;
+	# this pins that the guard exists and is wired into the endpoint.
+	body = re.search(r"def _enforce_caller_quota\(\):(.*?)\ndef ", ENDPOINT_SRC, re.S)
+	assert body, "the per-caller quota helper must exist"
+	assert "frappe.session.user" in body.group(1)
+	assert "make_key" in body.group(1), "counter keys must be namespaced like frappe's own"
+	assert "_enforce_caller_quota()" in ENDPOINT_SRC, "the quota must be called by the endpoint"
+
+
+def test_npub_is_validated_before_it_is_logged_or_sent_upstream():
+	# The npub is caller-controlled and interpolated raw into the audit line;
+	# a newline in it forges entries in the one log that answers "which
+	# accounts were exposed". Ordering is the whole guarantee.
+	assert re.search(r"NPUB_RE\s*=\s*re\.compile\(", ENDPOINT_SRC), "npub must have a format guard"
+	fn = re.search(r"\ndef get_support_contact_by_npub\(npub\):(.*)", ENDPOINT_SRC, re.S).group(1)
+	guard = fn.index("_reject_malformed_npub(npub)")
+	# Every log call that interpolates the npub, wherever it sits in the body.
+	npub_lines = [m.start() for m in re.finditer(r"_audit_logger\(\)\.\w+\(\s*f?\"[^\"]*\{npub\}", fn)]
+	assert npub_lines, "expected the audit lines to name the npub"
+	assert guard < min(npub_lines), "validate before the npub reaches a log line"
+	assert guard < fn.index("GraphQLClient("), "validate before the upstream round-trip"
+
+
+def test_the_caller_quota_is_charged_before_validation():
+	# Malformed input must not be free: the quota is what bounds a leaked
+	# bridge key, and it buckets on the session user without touching `npub`,
+	# so running it first costs an enumerator nothing in forgery terms.
+	fn = re.search(r"\ndef get_support_contact_by_npub\(npub\):(.*)", ENDPOINT_SRC, re.S).group(1)
+	assert fn.index("_enforce_caller_quota()") < fn.index("_reject_malformed_npub(npub)")
+
+
+def test_the_audit_logger_sets_its_own_level():
+	# frappe.logger() defaults to ERROR off a dev server, so INFO audit
+	# records are dropped on the cluster unless the level is raised here.
+	assert re.search(r"logger\.setLevel\(logging\.INFO\)", ENDPOINT_SRC)
+	assert re.search(
+		r'frappe\.logger\(\s*"support_lookup"', ENDPOINT_SRC
+	), "the audit logger needs its own module name, not the shared default file"
+	fn = re.search(r"\ndef get_support_contact_by_npub\(npub\):(.*)", ENDPOINT_SRC, re.S).group(1)
+	assert "frappe.logger()" not in fn, "bare frappe.logger() writes nothing at INFO in prod"
+
+
+def test_transport_failures_are_caught_alongside_graphql_errors():
+	# execute_query calls raise_for_status(), so an upstream 5xx arrives as a
+	# requests exception; uncaught, handle_api_errors echoes the internal
+	# GraphQL URL to the support droplet.
+	assert re.search(
+		r"except \(GraphQLError, requests\.exceptions\.RequestException\)", ENDPOINT_SRC
+	), "the upstream guard must cover transport failures, not just GraphQLError"
+
+
+def test_role_gate_includes_the_dedicated_service_role():
+	assert re.search(r"SUPPORT_LOOKUP_ROLES\s*=\s*\[\"Support Lookup\", \*ADMIN_ROLES\]", ENDPOINT_SRC)
+
+
+def test_setup_provisions_the_support_lookup_role_without_desk_access():
+	setup_src = SETUP_PY.read_text()
+	assert re.search(
+		r"\(\"Support Lookup\",\s*0\)", setup_src
+	), "ensure_roles must create the Support Lookup role with desk_access=0"
+
+
+def test_query_targets_account_details_by_npub():
+	assert "accountDetailsByNpub(npub: $npub)" in ENDPOINT_SRC
+
+
+def test_query_never_requests_financial_fields():
+	# The response leaves the cluster for the support droplet. Identity only.
+	query = re.search(r"SUPPORT_CONTACT_BY_NPUB_QUERY\s*=\s*\"\"\"(.*?)\"\"\"", ENDPOINT_SRC, re.S).group(1)
+	for forbidden in ("wallets", "balance", "capabilities", "erpParty", "coordinates"):
+		assert forbidden not in query, f"support lookup query must not request {forbidden}"
+
+
+def test_upstream_jwt_roles_stay_read_narrow():
+	# Accounts Manager is what the flash admin shield requires; the frappe-side
+	# gate is the boundary. System Manager would be gratuitous power. Assert on
+	# the literal itself, not the file — prose mentioning the role is fine.
+	literal = re.search(r"UPSTREAM_JWT_ROLES\s*=\s*\(([^)]*)\)", ENDPOINT_SRC)
+	assert literal, "UPSTREAM_JWT_ROLES must be a tuple literal"
+	roles = re.findall(r"\"([^\"]+)\"", literal.group(1))
+	assert roles == ["Accounts Manager"]
+
+
+def test_jwt_roles_stays_confined_to_the_reviewed_call_site():
+	# Repo-wide, not one file: any endpoint may pass jwt_roles=("System
+	# Manager",) and mint full upstream admin from a frappe role with no desk
+	# access. New call sites must be reviewed into JWT_ROLES_ALLOWED_FILES.
+	offenders = sorted(
+		str(p.relative_to(REPO_ROOT))
+		for p in APP_DIR.rglob("*.py")
+		if "tests" not in p.parts and p.name not in JWT_ROLES_ALLOWED_FILES and "jwt_roles" in p.read_text()
+	)
+	assert not offenders, (
+		"jwt_roles forges upstream privilege independent of the caller's frappe "
+		f"roles; unreviewed use in: {', '.join(offenders)}"
+	)
+
+
+def test_graphql_client_supports_fixed_jwt_roles():
+	assert re.search(r"def __init__\(self, jwt_roles=None\):", CLIENT_SRC)
+	assert re.search(r"self\._jwt_roles or \(frappe\.get_roles\(user\) if user else \[\]\)", CLIENT_SRC)
+
+
+# --- "a leaked bridge key can call exactly this read and nothing else" ---
+#
+# That claim (support_lookup.py, and the reason this endpoint is allowed to
+# exist at all) is a statement about the WHOLE app, not about this file: it
+# holds only while every other whitelisted endpoint refuses a caller whose sole
+# role is "Support Lookup". frappe.whitelist() alone does not — it only requires
+# a session — and frappe.get_all / frappe.get_value, which these endpoints read
+# through, are documented as not checking permissions. So one whitelist added
+# without a role gate hands the bridge key whatever that endpoint reads. The two
+# tests below are the repo-wide pins for the two halves of the claim.
+
+# Every decorator in this app that ends in a frappe.PermissionError for the
+# wrong role. require_admin/require_financial are thin wrappers over
+# require_roles (api/auth.py); a new one must be added here deliberately.
+ROLE_GATE_DECORATORS = ("require_roles", "require_admin", "require_financial")
+
+WHITELISTED_DEF_RE = re.compile(
+	r"@frappe\.whitelist\([^)]*\)[ \t]*\n((?:[ \t]*@[^\n]*\n)*)[ \t]*def[ \t]+(\w+)"
+)
+
+
+def _whitelisted_endpoints():
+	"""(path, function name, the decorators between @whitelist and def)."""
+	for path in sorted(APP_DIR.rglob("*.py")):
+		if "tests" in path.parts:
+			continue
+		src = path.read_text()
+		for match in WHITELISTED_DEF_RE.finditer(src):
+			yield str(path.relative_to(REPO_ROOT)), match.group(2), match.group(1)
+
+
+def test_every_whitelisted_endpoint_is_role_gated():
+	# @frappe.whitelist() makes a function callable by ANY authenticated user
+	# over /api/method/. The bridge service user is an authenticated user.
+	endpoints = list(_whitelisted_endpoints())
+	# Guards the guard: a regex that stopped matching would make this vacuous.
+	assert "get_support_contact_by_npub" in {name for _, name, _ in endpoints}
+	ungated = sorted(
+		f"{path}::{name}"
+		for path, name, decorators in endpoints
+		if not any(d in decorators for d in ROLE_GATE_DECORATORS)
+	)
+	assert not ungated, (
+		"every @frappe.whitelist() endpoint must sit behind a role gate — an ungated "
+		"one is reachable by the nostr-bridge service key, which holds only "
+		f'"Support Lookup": {", ".join(ungated)}'
+	)
+
+
+def test_support_lookup_is_the_only_endpoint_the_bridge_role_can_reach():
+	# The other half: gates exist, but none of them may admit "Support Lookup".
+	# ADMIN_ROLES / FINANCIAL_ROLES back require_admin / require_financial, so
+	# adding the bridge role to either would silently open every admin endpoint
+	# in the app to the droplet's key.
+	auth_src = (API_DIR / "auth.py").read_text()
+	for name in ("ADMIN_ROLES", "FINANCIAL_ROLES"):
+		literal = re.search(rf"{name}\s*=\s*\[([^\]]*)\]", auth_src)
+		assert literal, f"{name} must be a list literal in api/auth.py"
+		assert "Support Lookup" not in literal.group(1), (
+			f'{name} must not include "Support Lookup" — it backs require_admin/'
+			"require_financial across the whole app"
+		)
+
+	offenders = sorted(
+		f"{path}::{name}"
+		for path, name, decorators in _whitelisted_endpoints()
+		if name != "get_support_contact_by_npub"
+		and ("Support Lookup" in decorators or "SUPPORT_LOOKUP_ROLES" in decorators)
+	)
+	assert not offenders, f"the bridge role must gate exactly one endpoint; also on: {', '.join(offenders)}"
