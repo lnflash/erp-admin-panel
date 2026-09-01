@@ -49,20 +49,21 @@
    "in_standard_filter": 1,
    "label": "Bridge Risk Tier",
    "options": "Prohibited\nControlled\nRestricted\nNot High Risk",
-   "reqd": 1
+   "description": "Bridge's published risk tier. Empty = Bridge has not published a tier for this country in our seed data."
   },
   {
-   "default": "1",
+   "default": "0",
    "fieldname": "flash_allowed",
    "fieldtype": "Check",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Flash Allowed"
+   "label": "Flash Allowed",
+   "description": "Checked = users whose phone number is from this country may start Bridge KYC (US virtual account). Read by the Flash api every 60s. Unchecked or missing countries are denied."
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-08 11:25:00.000000",
+ "modified": "2026-09-01 22:43:58.000000",
  "modified_by": "Administrator",
  "module": "Admin Panel",
  "name": "Allowed Country",
@@ -87,8 +88,8 @@
   }
  ],
  "search_fields": "country_name, iso_code, alpha2_code",
- "sort_field": "modified",
- "sort_order": "DESC",
+ "sort_field": "country_name",
+ "sort_order": "ASC",
  "states": [],
  "track_changes": 1
 }
