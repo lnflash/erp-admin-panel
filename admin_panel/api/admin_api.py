@@ -6,9 +6,11 @@ import requests as requests_lib
 
 from .auth import audit_log, require_admin, require_financial, require_roles
 from .common import handle_api_errors
+from .compliance_audit import record_event
 from .flash_identifiers import is_flash_username_candidate
 from .fygaro_topup_core import rejection_reason
 from .graphql_client import GraphQLClient, GraphQLError
+from .idv_core import DEFAULT_APPROVE_REASON, DEFAULT_REJECT_REASON, SETTINGS_DOCTYPE, SETTINGS_FIELDS
 from .transfer_identity_core import (
 	build_payer_fields,
 	collect_lookup_refs,
@@ -322,8 +324,7 @@ def send_user_alert(username, title, message):
 		frappe.db.commit()
 	except Exception as exc:
 		detail = (
-			f"DIRECT alert was DELIVERED to @{username} ({title!r}) but the audit "
-			f"row failed to write: {exc}"
+			f"DIRECT alert was DELIVERED to @{username} ({title!r}) but the audit row failed to write: {exc}"
 		)
 		frappe.logger().error(detail)
 		# The pod log is erased by the next deploy; this is the record that has
@@ -511,15 +512,98 @@ def _create_erp_records(req):
 	return errors, customer_name
 
 
+# ── ID verification (Phase 0) ─────────────────────────────────────
+
+
+def _decision_reason(reason_code, expected_outcome):
+	"""Resolve a Decision Reason that must carry ``expected_outcome``.
+
+	Returns ``(row, error)``: ``row`` has outcome / label / user_facing_message
+	when the code exists with the right outcome, else ``error`` is the
+	user-facing message. Checked BEFORE any external side effect so a bad code
+	can never leave flash upgraded and the local request un-decided.
+	"""
+	row = frappe.db.get_value(
+		"Decision Reason",
+		reason_code,
+		["outcome", "label", "user_facing_message"],
+		as_dict=True,
+	)
+	if not row:
+		return None, f"Unknown decision reason '{reason_code}'"
+	if row.get("outcome") != expected_outcome:
+		return None, (
+			f"Decision reason '{reason_code}' is a {row.get('outcome')} reason, not {expected_outcome}"
+		)
+	return row, None
+
+
+def get_or_create_id_verification(req_doc):
+	"""The ID Verification mirroring ``req_doc`` (one per request), created on first use."""
+	name = frappe.db.get_value("ID Verification", {"upgrade_request": req_doc.name}, "name")
+	if name:
+		return frappe.get_doc("ID Verification", name)
+	doc = frappe.get_doc(
+		{
+			"doctype": "ID Verification",
+			"upgrade_request": req_doc.name,
+			"username": req_doc.username,
+			"requested_level": req_doc.requested_level,
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	return doc
+
+
+def _mirror_decision(req, status, reason_code, reviewed_at, note=None):
+	"""Stamp a reviewer decision onto the request's ID Verification."""
+	idv = get_or_create_id_verification(req)
+	idv.status = status
+	idv.reviewed_by = frappe.session.user
+	idv.reviewed_at = reviewed_at
+	idv.decision_reason = reason_code
+	if note is not None:
+		idv.reviewer_note = note
+	idv.save(ignore_permissions=True)
+	return idv
+
+
+def _decision_payload(req, idv, reason_code, **extra):
+	payload = {
+		"username": req.username,
+		"requested_level": req.requested_level,
+		"decision_reason": reason_code,
+		"id_verification": idv.name,
+		"evidence_sha256": [
+			getattr(row, "sha256", None)
+			for row in (idv.get("evidence") or [])
+			if getattr(row, "sha256", None)
+		],
+	}
+	payload.update(extra)
+	return payload
+
+
 @frappe.whitelist()
 @require_admin()
 @handle_api_errors
-def approve_upgrade_request(request_id):
-	"""Approve an account upgrade request and update account level via GraphQL"""
+def approve_upgrade_request(request_id, reason_code=None):
+	"""Approve an account upgrade request and update account level via GraphQL.
+
+	``reason_code`` is a Decision Reason with outcome ``approve`` (default
+	APPROVE_VERIFIED). The decision is stamped on the request and mirrored to
+	its ID Verification, and an ``upgrade_approved`` ledger event is written.
+	"""
 	req = frappe.get_doc("Account Upgrade Request", request_id, for_update=True)
 
 	if req.status != "Pending":
 		return {"success": False, "error": f"Request has already been {req.status.lower()}"}
+
+	reason_code = reason_code or DEFAULT_APPROVE_REASON
+	_, reason_error = _decision_reason(reason_code, "approve")
+	if reason_error:
+		frappe.response["http_status_code"] = 400
+		return {"success": False, "error": reason_error}
 
 	# Get account details to retrieve the UID
 	client = GraphQLClient()
@@ -546,8 +630,19 @@ def approve_upgrade_request(request_id):
 		return {"success": False, "errors": error_messages}
 
 	# Update local request record
+	reviewed_at = frappe.utils.now()
 	req.status = "Approved"
+	req.reviewed_by = frappe.session.user
+	req.reviewed_at = reviewed_at
+	req.decision_reason = reason_code
 	req.save()
+	idv = _mirror_decision(req, "Approved", reason_code, reviewed_at)
+	record_event(
+		"upgrade_approved",
+		"Account Upgrade Request",
+		request_id,
+		_decision_payload(req, idv, reason_code),
+	)
 	frappe.db.commit()
 
 	audit_log(
@@ -566,23 +661,127 @@ def approve_upgrade_request(request_id):
 @frappe.whitelist()
 @require_admin()
 @handle_api_errors
-def reject_upgrade_request(request_id, reason=None):
-	"""Reject an account upgrade request (local record only, no level change)"""
+def reject_upgrade_request(request_id, reason=None, reason_code=None):
+	"""Reject an account upgrade request (local record only, no level change).
+
+	``reason`` is the free-text note shown in support_note; ``reason_code`` is
+	a Decision Reason with outcome ``reject`` (default REJECT_OTHER). The
+	decision is mirrored to the ID Verification and an ``upgrade_rejected``
+	ledger event is written.
+	"""
 	req = frappe.get_doc("Account Upgrade Request", request_id, for_update=True)
 
 	if req.status != "Pending":
 		return {"success": False, "error": f"Request has already been {req.status.lower()}"}
 
+	reason_code = reason_code or DEFAULT_REJECT_REASON
+	_, reason_error = _decision_reason(reason_code, "reject")
+	if reason_error:
+		frappe.response["http_status_code"] = 400
+		return {"success": False, "error": reason_error}
+
 	# Update local request record only - rejection doesn't change account level
+	reviewed_at = frappe.utils.now()
 	req.status = "Rejected"
 	req.support_note = reason or "No reason provided"
+	req.reviewed_by = frappe.session.user
+	req.reviewed_at = reviewed_at
+	req.decision_reason = reason_code
 	req.save()
+	idv = _mirror_decision(req, "Rejected", reason_code, reviewed_at, note=reason)
+	record_event(
+		"upgrade_rejected",
+		"Account Upgrade Request",
+		request_id,
+		_decision_payload(req, idv, reason_code, reason=reason or "No reason provided"),
+	)
 
 	frappe.db.commit()
 	audit_log(
 		"reject_upgrade", "Account Upgrade Request", request_id, {"reason": reason or "No reason provided"}
 	)
 	return {"success": True, "message": "Request rejected."}
+
+
+@frappe.whitelist()
+@require_admin()
+@handle_api_errors
+def request_resubmission(request_id, reason_code, note=None):
+	"""Ask the user to resubmit evidence without deciding the request.
+
+	The request stays Pending. Its ID Verification moves to "Resubmit
+	requested" carrying the reason and the reviewer's note, the request's
+	support_note records the ask, and a ``resubmission_requested`` ledger
+	event is written. Notifying the user (push / in-app, using the reason's
+	user_facing_message) is flash-side and out of scope here.
+	"""
+	req = frappe.get_doc("Account Upgrade Request", request_id, for_update=True)
+
+	if req.status != "Pending":
+		frappe.response["http_status_code"] = 400
+		return {"success": False, "error": f"Request has already been {req.status.lower()}"}
+
+	if not reason_code:
+		frappe.response["http_status_code"] = 400
+		return {"success": False, "error": "reason_code is required"}
+	reason, reason_error = _decision_reason(reason_code, "resubmit")
+	if reason_error:
+		frappe.response["http_status_code"] = 400
+		return {"success": False, "error": reason_error}
+
+	idv = get_or_create_id_verification(req)
+	idv.status = "Resubmit requested"
+	idv.decision_reason = reason_code
+	idv.reviewer_note = note
+	idv.save(ignore_permissions=True)
+
+	ask = reason.get("user_facing_message") or reason.get("label") or reason_code
+	req.support_note = f"Resubmission requested ({reason_code}): {ask}" + (f" — {note}" if note else "")
+	req.save()
+	record_event(
+		"resubmission_requested",
+		"Account Upgrade Request",
+		request_id,
+		{
+			"username": req.username,
+			"requested_level": req.requested_level,
+			"decision_reason": reason_code,
+			"note": note,
+			"id_verification": idv.name,
+		},
+	)
+	frappe.db.commit()
+	audit_log(
+		"request_resubmission",
+		"Account Upgrade Request",
+		request_id,
+		{"reason_code": reason_code, "note": note},
+	)
+	return {
+		"success": True,
+		"message": "Resubmission requested.",
+		"user_facing_message": reason.get("user_facing_message"),
+	}
+
+
+@frappe.whitelist()
+@require_admin()
+@handle_api_errors
+def get_id_verification(request_id):
+	"""The ID Verification for an upgrade request as a dict, or None if none exists yet."""
+	name = frappe.db.get_value("ID Verification", {"upgrade_request": request_id}, "name")
+	if not name:
+		return None
+	return frappe.get_doc("ID Verification", name).as_dict()
+
+
+@frappe.whitelist()
+@require_admin()
+@handle_api_errors
+def get_idv_settings():
+	"""Current ID Verification Settings (the tunable fields only)."""
+	settings = frappe.get_doc(SETTINGS_DOCTYPE)
+	return {fieldname: settings.get(fieldname) for fieldname, _ in SETTINGS_FIELDS}
 
 
 @frappe.whitelist()
@@ -719,7 +918,20 @@ def get_id_document_url(file_key):
 		frappe.response["http_status_code"] = 502
 		return {"success": False, "error": "No read URL returned"}
 
+	# Every successful mint is an evidence view — ledgered, not best-effort:
+	# a view the ledger cannot record must not be served.
+	record_event(
+		"evidence_viewed",
+		"Account Upgrade Request",
+		_upgrade_request_for_file_key(file_key) or file_key,
+		{"file_key": file_key},
+	)
 	return {"success": True, "url": url}
+
+
+def _upgrade_request_for_file_key(file_key):
+	"""Name of the upgrade request whose id_document is ``file_key``, or None."""
+	return frappe.db.get_value("Account Upgrade Request", {"id_document": file_key}, "name")
 
 
 # ── Account Hub helpers ──────────────────────────────────────────

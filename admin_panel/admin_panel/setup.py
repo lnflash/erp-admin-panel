@@ -11,6 +11,8 @@ def after_migrate():
 	ensure_desk_home_page()
 	ensure_public_assets_symlink()
 	seed_allowed_countries()
+	seed_decision_reasons()
+	seed_identity_document_types()
 
 
 def ensure_roles():
@@ -251,3 +253,223 @@ def ensure_public_assets_symlink():
 		os.path.join(bench_path, "sites", "assets", "admin_panel"),
 		os.path.join(bench_path, "apps", "admin_panel", "admin_panel", "public"),
 	)
+
+
+# ── ID verification seed data ─────────────────────────────────────────────
+
+# (code, outcome, label, user_facing_message). The message is what the user
+# reads: plain language, says what to fix, never why we suspect them.
+DECISION_REASONS = (
+	(
+		"APPROVE_VERIFIED",
+		"approve",
+		"Identity verified",
+		"Your identity has been verified and your account has been upgraded.",
+	),
+	(
+		"APPROVE_BRIDGE_KYC",
+		"approve",
+		"Verified via Bridge KYC",
+		"Your identity was confirmed through your completed KYC and your account has been upgraded.",
+	),
+	(
+		"REJECT_NAME_MISMATCH",
+		"reject",
+		"Name does not match",
+		"The name on your ID does not match the name on your account. "
+		"Update your account name to match your ID exactly, then apply again.",
+	),
+	(
+		"REJECT_EXPIRED_DOCUMENT",
+		"reject",
+		"Document expired",
+		"The ID you submitted has expired. Please apply again with a valid, unexpired ID.",
+	),
+	(
+		"REJECT_DUPLICATE_DOCUMENT",
+		"reject",
+		"Document already used",
+		"This ID is already linked to another account. If you believe this is a mistake, contact support.",
+	),
+	(
+		"REJECT_SUSPECTED_FORGERY",
+		"reject",
+		"Document could not be authenticated",
+		"We could not authenticate the ID you submitted. Please contact support.",
+	),
+	(
+		"REJECT_SANCTIONS_HIT",
+		"reject",
+		"Sanctions screening",
+		"We are unable to upgrade your account at this time. Please contact support.",
+	),
+	(
+		"REJECT_UNSUPPORTED_DOCUMENT",
+		"reject",
+		"Document type not accepted",
+		"We do not accept this type of ID. Please apply again with a passport, "
+		"driver's licence or national ID card.",
+	),
+	(
+		"REJECT_OTHER",
+		"reject",
+		"Other",
+		"We were unable to approve your upgrade. Please contact support for details.",
+	),
+	(
+		"RESUBMIT_BLURRY",
+		"resubmit",
+		"Photo too blurry",
+		"Your ID photo is too blurry to read. Hold the camera steady in good light and try again.",
+	),
+	(
+		"RESUBMIT_GLARE",
+		"resubmit",
+		"Glare on document",
+		"There is glare covering part of your ID. Move away from direct light and try again.",
+	),
+	(
+		"RESUBMIT_CROPPED",
+		"resubmit",
+		"Document cut off",
+		"Part of your ID is cut off. Make sure all four corners are visible and try again.",
+	),
+	(
+		"RESUBMIT_WRONG_DOCUMENT",
+		"resubmit",
+		"Wrong document",
+		"The photo you sent is not an accepted ID. Please submit a passport, "
+		"driver's licence or national ID card.",
+	),
+	(
+		"RESUBMIT_SELFIE_MISSING",
+		"resubmit",
+		"Selfie missing",
+		"We need a selfie to match against your ID. Please take a clear selfie and try again.",
+	),
+)
+
+
+def seed_decision_reasons():
+	"""Idempotently seed Decision Reason codes.
+
+	Missing codes are inserted. Existing rows keep their operator-tuned label,
+	message and active flag; only ``outcome`` is re-asserted, because the API
+	validates a code's outcome against the action being taken.
+	"""
+	created = 0
+	for code, outcome, label, message in DECISION_REASONS:
+		if frappe.db.exists("Decision Reason", code):
+			if frappe.db.get_value("Decision Reason", code, "outcome") != outcome:
+				frappe.db.set_value("Decision Reason", code, "outcome", outcome)
+			continue
+		doc = frappe.new_doc("Decision Reason")
+		doc.update(
+			{
+				"code": code,
+				"outcome": outcome,
+				"label": label,
+				"user_facing_message": message,
+				"active": 1,
+			}
+		)
+		doc.flags.ignore_permissions = True
+		doc.insert()
+		created += 1
+	frappe.db.commit()
+	print(f"Decision Reason seed: {created} created, {len(DECISION_REASONS) - created} existing")
+
+
+def _document_type(code, country, document_name, **overrides):
+	row = {
+		"code": code,
+		"country": country,
+		"document_name": document_name,
+		"has_mrz": 0,
+		"sides": "1",
+		"base_confidence": 0.5,
+		"enabled": 0,
+		"sample_verified": 0,
+		"vendor_extraction": 0,
+		"template_keywords": "",
+	}
+	row.update(overrides)
+	return row
+
+
+def _passport(code, country):
+	return _document_type(
+		code,
+		country,
+		"Passport",
+		has_mrz=1,
+		enabled=1,
+		base_confidence=0.9,
+		template_keywords="PASSPORT\nP<",
+	)
+
+
+# ``country`` values are Frappe `Country` document names. A row whose country
+# is missing on the site is skipped (logged), never fatal.
+IDENTITY_DOCUMENT_TYPES = (
+	_passport("JM_PASSPORT", "Jamaica"),
+	_passport("KY_PASSPORT", "Cayman Islands"),
+	_passport("TT_PASSPORT", "Trinidad and Tobago"),
+	_passport("BB_PASSPORT", "Barbados"),
+	_passport("BS_PASSPORT", "Bahamas"),
+	_passport("SV_PASSPORT", "El Salvador"),
+	_document_type(
+		"JM_DRIVERS_LICENCE",
+		"Jamaica",
+		"Driver's Licence",
+		sides="2",
+		enabled=1,
+		base_confidence=0.6,
+		template_keywords="DRIVER'S LICENCE\nJAMAICA",
+	),
+	_document_type("JM_VOTER_ID", "Jamaica", "Voter ID", enabled=1, base_confidence=0.4),
+	_document_type("JM_NIDS", "Jamaica", "National ID Card (NIDS)", sides="2"),
+	_document_type("KY_DRIVERS_LICENCE", "Cayman Islands", "Driver's Licence", sides="2"),
+	_document_type("TT_NATIONAL_ID", "Trinidad and Tobago", "National ID Card", sides="2"),
+	_document_type("TT_DRIVERS_PERMIT", "Trinidad and Tobago", "Driver's Permit", sides="2"),
+	_document_type("BB_NATIONAL_ID", "Barbados", "National ID Card", sides="2"),
+	_document_type("BB_DRIVERS_LICENCE", "Barbados", "Driver's Licence", sides="2"),
+	_document_type("BS_DRIVERS_LICENCE", "Bahamas", "Driver's Licence", sides="2"),
+	_document_type("BS_VOTERS_CARD", "Bahamas", "Voter's Card"),
+	_document_type(
+		"SV_DUI",
+		"El Salvador",
+		"DUI (Documento Único de Identidad)",
+		sides="2",
+		enabled=1,
+		base_confidence=0.6,
+	),
+)
+
+
+def seed_identity_document_types():
+	"""Idempotently seed the Identity Document Type registry.
+
+	Insert-only: an existing code is left exactly as the operator has it
+	(enabled / sample_verified / keywords are tuned in production). A row
+	whose ``Country`` does not exist on this site is skipped with a log line
+	so a missing country can never fail the migrate.
+	"""
+	created = skipped = existing = 0
+	for row in IDENTITY_DOCUMENT_TYPES:
+		if frappe.db.exists("Identity Document Type", row["code"]):
+			existing += 1
+			continue
+		if not frappe.db.exists("Country", row["country"]):
+			frappe.logger().warning(
+				f"Identity Document Type seed: skipping {row['code']} — Country '{row['country']}' not found"
+			)
+			skipped += 1
+			continue
+		doc = frappe.new_doc("Identity Document Type")
+		doc.update(row)
+		doc.flags.ignore_permissions = True
+		doc.insert()
+		created += 1
+	frappe.db.commit()
+	print(f"Identity Document Type seed: {created} created, {existing} existing, {skipped} skipped")

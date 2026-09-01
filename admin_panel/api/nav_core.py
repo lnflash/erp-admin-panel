@@ -112,6 +112,30 @@ NAV_GROUPS = (
 			_page("Bridge KYC", "bridge-kyc", "BK", "Live Bridge KYC status for every customer"),
 			_doctype("Allowed Country", "Allowed Country", "AC", "Countries cleared for onboarding"),
 			_doctype("System Watchlist", "System Watchlist", "SW", "Flagged wallets under active watch"),
+			_doctype(
+				"ID Verification",
+				"ID Verification",
+				"IV",
+				"Identity checks and reviewer decisions per upgrade request",
+			),
+			_doctype(
+				"Identity Document Type",
+				"Identity Document Type",
+				"DT",
+				"Accepted ID documents per country",
+			),
+			_doctype(
+				"ID Verification Settings",
+				"ID Verification Settings",
+				"VS",
+				"Auto-approve, Bridge KYC and retention policy",
+			),
+			_doctype(
+				"Compliance Audit Event",
+				"Compliance Audit Event",
+				"AE",
+				"Append-only, hash-chained decision ledger",
+			),
 		),
 	},
 	{
@@ -145,6 +169,12 @@ NAV_GROUPS = (
 # here or in NAV_GROUPS instead of silently going missing.
 UNLISTED = {
 	"admin-dashboard": "This page. The directory does not list itself.",
+	"decision-reason": (
+		"Reference data behind the ID Verification decision dropdown; seeded by "
+		"after_migrate and reachable from the ID Verification form."
+	),
+	"verification-evidence": "Child table of ID Verification; has no list view.",
+	"verification-check": "Child table of ID Verification; has no list view.",
 }
 
 

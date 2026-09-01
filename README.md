@@ -16,7 +16,7 @@ bench install-app admin_panel
 
 #### DocTypes
 
-App-owned DocTypes (`User Alerts`, `Account Upgrade Request`) are defined as module-level JSON files, not fixtures:
+App-owned DocTypes (`User Alerts`, `Account Upgrade Request`, the ID-verification set below, …) are defined as module-level JSON files, not fixtures:
 
 ```
 admin_panel/admin_panel/doctype/
@@ -41,6 +41,10 @@ admin_panel/admin_panel/doctype/
 1. Create `admin_panel/admin_panel/doctype/{doctype_name}/` with `{doctype_name}.json`, `{doctype_name}.py`, and `__init__.py`
 2. Set `"custom": 0` and `"module": "Admin Panel"` in the JSON
 3. Follow the same deploy + migrate flow above
+
+#### ID verification (Phase 0)
+
+The upgrade-request review is backed by `ID Verification` (one per request, with `Verification Evidence` / `Verification Check` child tables), the `Decision Reason` and `Identity Document Type` registries (seeded from `after_migrate`), the `ID Verification Settings` single, and `Compliance Audit Event` — an append-only, hash-chained ledger written only by `admin_panel.api.compliance_audit.record_event`. Decision endpoints (`approve_upgrade_request`, `reject_upgrade_request`, `request_resubmission`, `get_id_verification`, `get_idv_settings`) live in `admin_panel.api.admin_api`; `verify_audit_chain` / `get_audit_anchor` in `admin_panel.api.compliance_audit`. The daily `post_daily_anchor` scheduler job needs a scheduler worker. Design and Phase 1 scope: [docs/plans/2026-09-01-id-verification-phase0.md](docs/plans/2026-09-01-id-verification-phase0.md).
 
 #### Pages
 
