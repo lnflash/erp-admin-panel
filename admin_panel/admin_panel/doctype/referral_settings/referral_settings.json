@@ -1,0 +1,52 @@
+{
+ "actions": [],
+ "creation": "2026-09-01 00:00:00.000000",
+ "custom": 0,
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "rewards_section",
+  "rewards_enabled"
+ ],
+ "fields": [
+  {
+   "fieldname": "rewards_section",
+   "fieldtype": "Section Break",
+   "label": "Referral Reward Payouts"
+  },
+  {
+   "default": "1",
+   "description": "Master kill switch for referral reward payouts. When unchecked, NO referral rewards are paid: payouts triggered by an invitee's KYC approval are DEFERRED (the invite stays unrewarded and can be paid later after re-enabling), never lost and never marked failed. Invites, signups, and KYC itself are unaffected. Flash re-reads this within ~60 seconds of a change.",
+   "fieldname": "rewards_enabled",
+   "fieldtype": "Check",
+   "label": "Rewards Payouts Enabled"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-09-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Admin Panel",
+ "name": "Referral Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Accounts Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
