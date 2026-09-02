@@ -726,23 +726,47 @@ def reject_upgrade_request(request_id, reason=None, reason_code=None):
 		frappe.response["http_status_code"] = 400
 		return {"success": False, "error": reason_error}
 
-	# Update local request record only - rejection doesn't change account level
-	reviewed_at = frappe.utils.now()
-	req.status = "Rejected"
-	req.support_note = reason or "No reason provided"
-	req.reviewed_by = frappe.session.user
-	req.reviewed_at = reviewed_at
-	req.decision_reason = reason_code
-	req.save()
-	idv = _mirror_decision(req, "Rejected", reason_code, reviewed_at, note=reason)
-	record_event(
-		"upgrade_rejected",
-		"Account Upgrade Request",
-		request_id,
-		_decision_payload(req, idv, reason_code, reason=reason or "No reason provided"),
-	)
-
+	# Update local request record only - rejection doesn't change account level.
+	# Unlike approve, nothing irreversible happens outside this transaction,
+	# so the status flip, the ID Verification mirror and the ledger event are
+	# committed as one atomic unit: if record_event or _mirror_decision throws
+	# partway through, roll back everything (including the status flip above)
+	# and report a real failure. `handle_api_errors` swallows a bare Exception
+	# and returns a normal (non-raising) dict, and Frappe auto-commits on a
+	# normal return from a POST-invoked whitelisted method — so without an
+	# explicit rollback here, a half-written pair (status changed, ledger
+	# event missing, or vice versa) would persist while the admin is told the
+	# call failed.
+	#
+	# Commit first, before making any change: nothing above this point wrote
+	# anything, so this only fixes the transaction's start boundary, giving
+	# the rollback below a clean point to return to instead of unwinding
+	# whatever the previous request on this connection left uncommitted.
 	frappe.db.commit()
+	reviewed_at = frappe.utils.now()
+	try:
+		req.status = "Rejected"
+		req.support_note = reason or "No reason provided"
+		req.reviewed_by = frappe.session.user
+		req.reviewed_at = reviewed_at
+		req.decision_reason = reason_code
+		req.save()
+		idv = _mirror_decision(req, "Rejected", reason_code, reviewed_at, note=reason)
+		record_event(
+			"upgrade_rejected",
+			"Account Upgrade Request",
+			request_id,
+			_decision_payload(req, idv, reason_code, reason=reason or "No reason provided"),
+		)
+		frappe.db.commit()
+	except Exception as exc:
+		frappe.db.rollback()
+		detail = f"Rejecting request {request_id} (phone {req.phone_number}) failed: {exc}"
+		frappe.logger().error(detail)
+		_record_unauditable_send(f"Rejection failed for {request_id}", detail)
+		frappe.response["http_status_code"] = 500
+		return {"success": False, "error": "Rejection failed to record — nothing was changed. Retry."}
+
 	audit_log(
 		"reject_upgrade", "Account Upgrade Request", request_id, {"reason": reason or "No reason provided"}
 	)
@@ -775,28 +799,45 @@ def request_resubmission(request_id, reason_code, note=None):
 		frappe.response["http_status_code"] = 400
 		return {"success": False, "error": reason_error}
 
-	idv = get_or_create_id_verification(req)
-	idv.status = "Resubmit requested"
-	idv.decision_reason = reason_code
-	idv.reviewer_note = note
-	idv.save(ignore_permissions=True)
-
-	ask = reason.get("user_facing_message") or reason.get("label") or reason_code
-	req.support_note = f"Resubmission requested ({reason_code}): {ask}" + (f" — {note}" if note else "")
-	req.save()
-	record_event(
-		"resubmission_requested",
-		"Account Upgrade Request",
-		request_id,
-		{
-			"username": req.username,
-			"requested_level": req.requested_level,
-			"decision_reason": reason_code,
-			"note": note,
-			"id_verification": idv.name,
-		},
-	)
+	# Same atomicity contract as reject_upgrade_request, including the
+	# baseline commit before any change (see the comment there) — roll back
+	# and report a real failure rather than let handle_api_errors' swallowed
+	# exception + Frappe's commit-on-normal-return persist half the pair.
 	frappe.db.commit()
+	try:
+		idv = get_or_create_id_verification(req)
+		idv.status = "Resubmit requested"
+		idv.decision_reason = reason_code
+		idv.reviewer_note = note
+		idv.save(ignore_permissions=True)
+
+		ask = reason.get("user_facing_message") or reason.get("label") or reason_code
+		req.support_note = f"Resubmission requested ({reason_code}): {ask}" + (f" — {note}" if note else "")
+		req.save()
+		record_event(
+			"resubmission_requested",
+			"Account Upgrade Request",
+			request_id,
+			{
+				"username": req.username,
+				"requested_level": req.requested_level,
+				"decision_reason": reason_code,
+				"note": note,
+				"id_verification": idv.name,
+			},
+		)
+		frappe.db.commit()
+	except Exception as exc:
+		frappe.db.rollback()
+		detail = f"Resubmission request for {request_id} (phone {req.phone_number}) failed: {exc}"
+		frappe.logger().error(detail)
+		_record_unauditable_send(f"Resubmission request failed for {request_id}", detail)
+		frappe.response["http_status_code"] = 500
+		return {
+			"success": False,
+			"error": "Resubmission request failed to record — nothing was changed. Retry.",
+		}
+
 	audit_log(
 		"request_resubmission",
 		"Account Upgrade Request",

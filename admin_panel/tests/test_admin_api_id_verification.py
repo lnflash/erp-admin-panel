@@ -54,6 +54,12 @@ def env(fake, monkeypatch):
 
 	fake.autoname["ID Verification"] = idv_name
 
+	# The seeded rows above stand in for data already committed to the real
+	# database before any admin action runs. Checkpoint them now so a
+	# rollback triggered by the function under test restores this baseline —
+	# not the empty, pre-seed state FakeFrappe starts from at construction.
+	fake.commit()
+
 	graphql = types.SimpleNamespace(lookups=[], level_updates=[], account={"id": "uid-1"}, result={})
 
 	class StubClient:
@@ -409,6 +415,89 @@ def test_reject_refuses_a_request_that_is_not_pending(env):
 	assert env.events == []
 
 
+# ── reject: audit-trail failure ───────────────────────────────────────────
+#
+# Unlike approve, rejection has no irreversible external side effect — flash
+# was never mutated — so a failure partway through must roll back the whole
+# thing (status flip included) and report a real error, not a false success.
+
+
+def test_reject_rolls_back_and_reports_failure_on_a_ledger_write_failure(env, monkeypatch):
+	log_calls = stub_log_error(monkeypatch)
+	monkeypatch.setattr(
+		admin_api, "record_event", lambda *a: (_ for _ in ()).throw(RuntimeError("ledger DB is gone"))
+	)
+
+	result = admin_api.reject_upgrade_request(REQUEST, reason="ID photo is of someone else")
+
+	assert result == {
+		"success": False,
+		"error": "Rejection failed to record — nothing was changed. Retry.",
+	}
+	assert env.fake.response["http_status_code"] == 500
+	# Nothing survives: status flip, mirror, and ledger event are one unit.
+	assert request_row(env)["status"] == "Pending"
+	assert idv_rows(env) == []
+	assert env.events == []
+	assert env.fake.rollbacks == 1
+	assert env.audits == []
+	assert len(log_calls) == 1
+
+
+def test_reject_reverts_an_existing_idv_on_a_ledger_write_failure(env, monkeypatch):
+	env.fake.seed(
+		"ID Verification",
+		{
+			"name": "IDV-00042",
+			"upgrade_request": REQUEST,
+			"status": "Ready for review",
+			"reviewed_by": None,
+			"decision_reason": None,
+		},
+	)
+	stub_log_error(monkeypatch)
+	monkeypatch.setattr(
+		admin_api, "record_event", lambda *a: (_ for _ in ()).throw(RuntimeError("ledger DB is gone"))
+	)
+
+	result = admin_api.reject_upgrade_request(REQUEST, reason="ID photo is of someone else")
+
+	assert result["success"] is False
+	idv = idv_rows(env)[0]
+	assert idv["status"] == "Ready for review"
+	assert idv["reviewed_by"] is None
+	assert idv["decision_reason"] is None
+	assert env.fake.rollbacks == 1
+
+
+def test_reject_rolls_back_on_an_idv_mirror_failure(env, monkeypatch):
+	log_calls = stub_log_error(monkeypatch)
+	monkeypatch.setattr(
+		admin_api, "_mirror_decision", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("insert failed"))
+	)
+
+	result = admin_api.reject_upgrade_request(REQUEST, reason="ID photo is of someone else")
+
+	assert result == {
+		"success": False,
+		"error": "Rejection failed to record — nothing was changed. Retry.",
+	}
+	assert request_row(env)["status"] == "Pending"
+	assert idv_rows(env) == []
+	assert env.events == []
+	assert env.fake.rollbacks == 1
+	assert len(log_calls) == 1
+
+
+def test_reject_reports_plain_success_when_the_audit_trail_does_not_fail(env, monkeypatch):
+	log_calls = stub_log_error(monkeypatch)
+
+	result = admin_api.reject_upgrade_request(REQUEST, reason="ID photo is of someone else")
+
+	assert result == {"success": True, "message": "Request rejected."}
+	assert log_calls == []
+
+
 # ── request_resubmission ────────────────────────────────────────────────
 
 
@@ -488,6 +577,72 @@ def test_request_resubmission_refuses_a_request_that_is_not_pending(env):
 	assert result == {"success": False, "error": "Request has already been approved"}
 	assert env.fake.response["http_status_code"] == 400
 	assert env.events == []
+
+
+# ── request_resubmission: audit-trail failure ─────────────────────────────
+#
+# Same atomicity contract as reject: nothing irreversible happens outside
+# this transaction, so a failure partway through rolls back the IDV mirror,
+# the request's support_note, and the ledger event together and reports a
+# real error instead of a false success.
+
+
+def test_request_resubmission_rolls_back_and_reports_failure_on_a_ledger_write_failure(env, monkeypatch):
+	log_calls = stub_log_error(monkeypatch)
+	monkeypatch.setattr(
+		admin_api, "record_event", lambda *a: (_ for _ in ()).throw(RuntimeError("ledger DB is gone"))
+	)
+
+	result = admin_api.request_resubmission(REQUEST, "RESUBMIT_BLURRY", note="front of ID unreadable")
+
+	assert result == {
+		"success": False,
+		"error": "Resubmission request failed to record — nothing was changed. Retry.",
+	}
+	assert env.fake.response["http_status_code"] == 500
+	req = request_row(env)
+	assert req["status"] == "Pending"
+	assert req["support_note"] is None
+	assert idv_rows(env) == []
+	assert env.events == []
+	assert env.fake.rollbacks == 1
+	assert env.audits == []
+	assert len(log_calls) == 1
+
+
+def test_request_resubmission_reverts_an_existing_idv_on_a_ledger_write_failure(env, monkeypatch):
+	env.fake.seed(
+		"ID Verification",
+		{
+			"name": "IDV-00042",
+			"upgrade_request": REQUEST,
+			"status": "Ready for review",
+			"decision_reason": None,
+			"reviewer_note": None,
+		},
+	)
+	stub_log_error(monkeypatch)
+	monkeypatch.setattr(
+		admin_api, "record_event", lambda *a: (_ for _ in ()).throw(RuntimeError("ledger DB is gone"))
+	)
+
+	result = admin_api.request_resubmission(REQUEST, "RESUBMIT_BLURRY", note="front of ID unreadable")
+
+	assert result["success"] is False
+	idv = idv_rows(env)[0]
+	assert idv["status"] == "Ready for review"
+	assert idv["decision_reason"] is None
+	assert idv["reviewer_note"] is None
+	assert env.fake.rollbacks == 1
+
+
+def test_request_resubmission_reports_plain_success_when_the_audit_trail_does_not_fail(env, monkeypatch):
+	log_calls = stub_log_error(monkeypatch)
+
+	result = admin_api.request_resubmission(REQUEST, "RESUBMIT_BLURRY", note="front of ID unreadable")
+
+	assert result["success"] is True
+	assert log_calls == []
 
 
 # ── reads + helper ──────────────────────────────────────────────────────
