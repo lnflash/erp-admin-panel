@@ -1,6 +1,7 @@
 import frappe
 
 from admin_panel.admin_panel.doctype.allowed_country.seed import seed_allowed_countries
+from admin_panel.api.compliance_audit import seed_chain_genesis
 
 
 def after_migrate():
@@ -13,6 +14,7 @@ def after_migrate():
 	seed_allowed_countries()
 	seed_decision_reasons()
 	seed_identity_document_types()
+	seed_chain_genesis()
 
 
 def ensure_roles():

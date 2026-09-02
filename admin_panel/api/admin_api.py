@@ -629,21 +629,56 @@ def approve_upgrade_request(request_id, reason_code=None):
 		error_messages = [err.get("message", "Unknown error") for err in result["errors"]]
 		return {"success": False, "errors": error_messages}
 
-	# Update local request record
+	# Update local request record. The account level change above is already
+	# irreversible from here — flash was just mutated via GraphQL and there is
+	# no compensating call — so the status flip to Approved gets committed on
+	# its own before anything else touches the audit trail.
 	reviewed_at = frappe.utils.now()
 	req.status = "Approved"
 	req.reviewed_by = frappe.session.user
 	req.reviewed_at = reviewed_at
 	req.decision_reason = reason_code
 	req.save()
-	idv = _mirror_decision(req, "Approved", reason_code, reviewed_at)
-	record_event(
-		"upgrade_approved",
-		"Account Upgrade Request",
-		request_id,
-		_decision_payload(req, idv, reason_code),
-	)
 	frappe.db.commit()
+
+	# The ID Verification mirror and the Compliance Audit Event are the audit
+	# trail FOR this decision, not the decision itself — and both are new
+	# doctypes with far less production mileage than Account Upgrade Request.
+	# A failure here must never be reported as a failed approval: flash is
+	# already upgraded and the request is already Approved above, so
+	# `handle_api_errors` turning this into "An internal error occurred" would
+	# only teach the admin to retry a mutation that cannot be retried safely,
+	# while the request stays misreported as pending review. Same contract as
+	# the alert-audit writes elsewhere on this page: log durably (survives the
+	# pod rolling) and report the approval succeeded, same as it did.
+	try:
+		idv = _mirror_decision(req, "Approved", reason_code, reviewed_at)
+		record_event(
+			"upgrade_approved",
+			"Account Upgrade Request",
+			request_id,
+			_decision_payload(req, idv, reason_code),
+		)
+		frappe.db.commit()
+	except Exception as exc:
+		detail = (
+			f"Account for request {request_id} (phone {req.phone_number}) was upgraded to "
+			f"{req.requested_level} and the request is marked Approved, but the ID "
+			f"Verification mirror / Compliance Audit Event write failed: {exc}"
+		)
+		frappe.logger().error(detail)
+		_record_unauditable_send(f"Approval audit trail failed for {request_id}", detail)
+		audit_log(
+			"approve_upgrade",
+			"Account Upgrade Request",
+			request_id,
+			{"phone": req.phone_number, "level": req.requested_level},
+		)
+		return {
+			"success": True,
+			"message": "Request approved and account level updated.",
+			"warning": "Approved, but the audit trail failed to write — do not retry.",
+		}
 
 	audit_log(
 		"approve_upgrade",

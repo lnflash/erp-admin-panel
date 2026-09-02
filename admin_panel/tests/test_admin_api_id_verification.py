@@ -199,6 +199,92 @@ def test_approve_reuses_an_existing_id_verification_and_ledgers_its_evidence(env
 	assert env.events[0][3]["evidence_sha256"] == ["aaa", "bbb"]
 
 
+# ── approve: audit-trail failure after flash is already upgraded ─────────
+#
+# The GraphQL account-level mutation above is irreversible and has no
+# compensating call. If the ID Verification mirror or the ledger write that
+# follows it throws, the approval must still be reported as a success — flash
+# really was upgraded and the request really is Approved — with the gap
+# logged durably instead of surfacing as an internal error an admin would
+# retry against an already-upgraded account.
+
+
+def stub_log_error(monkeypatch):
+	calls = []
+	monkeypatch.setattr(frappe, "log_error", lambda *a, **k: calls.append((a, k)), raising=False)
+	monkeypatch.setattr(
+		frappe, "get_traceback", lambda: "Traceback (most recent call last):\n...", raising=False
+	)
+	return calls
+
+
+def test_approve_survives_a_ledger_write_failure(env, monkeypatch):
+	log_calls = stub_log_error(monkeypatch)
+	monkeypatch.setattr(
+		admin_api, "record_event", lambda *a: (_ for _ in ()).throw(RuntimeError("ledger DB is gone"))
+	)
+
+	result = admin_api.approve_upgrade_request(REQUEST)
+
+	assert result["success"] is True
+	assert result["message"] == "Request approved and account level updated."
+	assert "do not retry" in result["warning"].lower()
+	# The account WAS upgraded and the decision IS durable, despite the ledger
+	# write failing — this is exactly what must never be rolled back.
+	assert env.graphql.level_updates == [("uid-1", "TWO", "CUST-1")]
+	req = request_row(env)
+	assert req["status"] == "Approved"
+	assert req["reviewed_by"] == "reviewer@getflash.io"
+	assert req["decision_reason"] == "APPROVE_VERIFIED"
+	# The ID Verification mirror ran and succeeded before the ledger write
+	# blew up — that partial progress is real information and must survive,
+	# not be discarded because the step after it failed.
+	assert idv_rows(env)[0]["status"] == "Approved"
+	# The gap in the audit trail is not silently lost.
+	assert len(log_calls) == 1
+	logged_text = " ".join(str(part) for part in log_calls[0][0]) + " ".join(
+		f"{k}={v}" for k, v in log_calls[0][1].items()
+	)
+	assert REQUEST in logged_text
+	# The legacy Comment audit still fires — it does not depend on the ledger.
+	assert [a[0] for a in env.audits] == ["approve_upgrade"]
+
+
+def test_approve_survives_an_idv_mirror_failure(env, monkeypatch):
+	log_calls = stub_log_error(monkeypatch)
+	monkeypatch.setattr(
+		admin_api, "_mirror_decision", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("insert failed"))
+	)
+
+	result = admin_api.approve_upgrade_request(REQUEST)
+
+	assert result == {
+		"success": True,
+		"message": "Request approved and account level updated.",
+		"warning": "Approved, but the audit trail failed to write — do not retry.",
+	}
+	assert request_row(env)["status"] == "Approved"
+	# Neither the mirror nor the ledger event happened, since the mirror is a
+	# prerequisite for the ledger payload — but that gap was logged, not lost.
+	assert idv_rows(env) == []
+	assert env.events == []
+	assert len(log_calls) == 1
+
+
+def test_approve_reports_plain_success_when_the_audit_trail_does_not_fail(env, monkeypatch):
+	"""The happy path is unchanged: no warning key, no durable log entry."""
+	log_calls = stub_log_error(monkeypatch)
+
+	result = admin_api.approve_upgrade_request(REQUEST)
+
+	assert result == {
+		"success": True,
+		"message": "Request approved and account level updated.",
+	}
+	assert "warning" not in result
+	assert log_calls == []
+
+
 # ── reject ──────────────────────────────────────────────────────────────
 
 

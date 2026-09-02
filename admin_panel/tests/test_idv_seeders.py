@@ -6,6 +6,7 @@ from pathlib import Path
 from idv_stubs import frappe
 
 from admin_panel.admin_panel import setup
+from admin_panel.api import compliance_audit as ledger
 
 SETUP_PY = Path(__file__).resolve().parents[1] / "admin_panel" / "setup.py"
 
@@ -173,6 +174,50 @@ def test_after_migrate_runs_both_seeders():
 	]
 	assert "seed_decision_reasons" in calls
 	assert "seed_identity_document_types" in calls
+	assert "seed_chain_genesis" in calls
 	# Countries must exist before document types link to them; both come
 	# after the roles the doctypes' permissions reference.
 	assert calls.index("ensure_roles") < calls.index("seed_decision_reasons")
+
+
+# ── Compliance Audit Event chain genesis ─────────────────────────────────
+#
+# _head_hash() locks the newest ledger row with SELECT ... FOR UPDATE so two
+# concurrent writers serialise instead of forking the chain. On a table that
+# is genuinely empty that lock has nothing to grab, so the first two
+# concurrent writers to a freshly migrated site can both chain onto
+# prev_hash=GENESIS. seed_chain_genesis() closes that window by writing one
+# real event before any request can reach record_event.
+
+
+def test_chain_genesis_seed_writes_one_event_on_an_empty_ledger(fake):
+	ledger.seed_chain_genesis()
+
+	rows = fake.rows(ledger.DOCTYPE)
+	assert len(rows) == 1
+	assert rows[0]["event_type"] == "ledger_initialized"
+	assert rows[0]["prev_hash"] == "GENESIS"
+	assert ledger.verify_chain() == {"ok": True, "checked": 1, "first_bad": None}
+	assert ledger.latest_anchor()["count"] == 1
+
+
+def test_chain_genesis_seed_is_idempotent(fake):
+	ledger.seed_chain_genesis()
+	first = [dict(r) for r in fake.rows(ledger.DOCTYPE)]
+
+	ledger.seed_chain_genesis()
+
+	assert fake.rows(ledger.DOCTYPE) == first, "second run must insert nothing"
+
+
+def test_chain_genesis_seed_is_a_noop_once_the_ledger_has_real_history(fake):
+	"""A migrate on a site that already has audit events must not touch the
+	chain — inserting anything here would no longer be the first row and
+	would need a real prev_hash, not the GENESIS sentinel."""
+	ledger.record_event("evidence_viewed", "Account Upgrade Request", "AUR-1", {})
+
+	ledger.seed_chain_genesis()
+
+	rows = fake.rows(ledger.DOCTYPE)
+	assert len(rows) == 1
+	assert rows[0]["event_type"] == "evidence_viewed"

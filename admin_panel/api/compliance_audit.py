@@ -202,6 +202,32 @@ def verify_chain(limit=None) -> dict:
 	return {"ok": True, "checked": checked, "first_bad": None}
 
 
+def seed_chain_genesis():
+	"""Write one real event so the ledger is never left truly empty.
+
+	``_head_hash`` reads the newest row with ``SELECT ... FOR UPDATE`` so two
+	concurrent writers serialise on the head instead of forking the chain —
+	but on an EMPTY table that ``FOR UPDATE`` locks nothing. The first two
+	concurrent writes to a freshly migrated site (a real possibility right
+	after ``bench migrate`` — e.g. a settings save racing an evidence view)
+	can both read ``prev_hash=GENESIS`` and both insert successfully with
+	different hashes, forking the chain from row one. ``verify_chain`` then
+	reports the fork as tamper on the second row, which reads as a security
+	incident on-call's first time seeing it, when it was actually a benign
+	startup race.
+
+	Called from ``after_migrate`` (admin_panel.admin_panel.setup), before any
+	request can reach ``record_event``: writing one ordinary event here closes
+	the window, since from this point on there is always a row for the next
+	``FOR UPDATE`` to lock. A no-op once the ledger already has history, so a
+	migrate on a site with existing audit events does nothing.
+	"""
+	if frappe.db.count(DOCTYPE):
+		return
+	record_event("ledger_initialized", None, None, {"seeded_by": "after_migrate"})
+	frappe.db.commit()
+
+
 def latest_anchor() -> dict:
 	"""The chain head: ``{"hash", "created_at", "count"}``."""
 	count = frappe.db.count(DOCTYPE)

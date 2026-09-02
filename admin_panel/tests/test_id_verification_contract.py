@@ -242,6 +242,10 @@ def test_compliance_audit_event_schema():
 		assert f[name]["fieldtype"] == "Data"
 	assert f["hash"]["unique"] == 1
 	assert f["created_at"]["fieldtype"] == "Datetime" and f["created_at"]["reqd"] == 1
+	# _head_hash's SELECT ... ORDER BY created_at ... FOR UPDATE must be able
+	# to seek the newest row via an index rather than scan-and-lock the whole
+	# table as the ledger grows.
+	assert f["created_at"]["search_index"] == 1
 	assert load("compliance_audit_event")["track_changes"] == 0
 
 
