@@ -206,7 +206,11 @@ def test_approve_reuses_an_existing_id_verification_and_ledgers_its_evidence(env
 # follows it throws, the approval must still be reported as a success — flash
 # really was upgraded and the request really is Approved — with the gap
 # logged durably instead of surfacing as an internal error an admin would
-# retry against an already-upgraded account.
+# retry against an already-upgraded account. The mirror and the ledger event
+# stay atomic WITH EACH OTHER, though: either both land, or the mirror write
+# is rolled back along with the failed ledger write, so a lone mirrored
+# "Approved" ID Verification with no matching Compliance Audit Event can
+# never survive.
 
 
 def stub_log_error(monkeypatch):
@@ -230,24 +234,70 @@ def test_approve_survives_a_ledger_write_failure(env, monkeypatch):
 	assert result["message"] == "Request approved and account level updated."
 	assert "do not retry" in result["warning"].lower()
 	# The account WAS upgraded and the decision IS durable, despite the ledger
-	# write failing — this is exactly what must never be rolled back.
+	# write failing — this is exactly what must never be rolled back. That
+	# commit happens before the mirror/ledger try block, so it is unaffected
+	# by the rollback below.
 	assert env.graphql.level_updates == [("uid-1", "TWO", "CUST-1")]
 	req = request_row(env)
 	assert req["status"] == "Approved"
 	assert req["reviewed_by"] == "reviewer@getflash.io"
 	assert req["decision_reason"] == "APPROVE_VERIFIED"
-	# The ID Verification mirror ran and succeeded before the ledger write
-	# blew up — that partial progress is real information and must survive,
-	# not be discarded because the step after it failed.
-	assert idv_rows(env)[0]["status"] == "Approved"
+	# The ID Verification mirror ran and saved before the ledger write blew
+	# up, but it must NOT survive: a mirrored "Approved" ID Verification with
+	# no matching Compliance Audit Event is exactly the orphan this ledger
+	# exists to prevent, and nothing downstream reconciles the two against
+	# each other. The mirror write is uncommitted at the point of failure, so
+	# rolling back discards it along with the ledger event — mirror and
+	# ledger stay atomic with each other even though the approval itself
+	# already committed.
+	assert idv_rows(env) == []
+	assert env.events == []
+	assert env.fake.rollbacks == 1
 	# The gap in the audit trail is not silently lost.
 	assert len(log_calls) == 1
 	logged_text = " ".join(str(part) for part in log_calls[0][0]) + " ".join(
 		f"{k}={v}" for k, v in log_calls[0][1].items()
 	)
 	assert REQUEST in logged_text
-	# The legacy Comment audit still fires — it does not depend on the ledger.
+	# The legacy Comment audit still fires — it does not depend on the ledger,
+	# and runs after the rollback so it is never itself discarded.
 	assert [a[0] for a in env.audits] == ["approve_upgrade"]
+
+
+def test_approve_reverts_an_existing_idv_when_the_ledger_write_fails(env, monkeypatch):
+	"""Same failure, but against a request whose ID Verification already
+	existed (e.g. from an earlier resubmission cycle) instead of being
+	created fresh by the mirror. The rollback must restore its prior state,
+	not just leave a freshly-inserted row absent."""
+	env.fake.seed(
+		"ID Verification",
+		{
+			"name": "IDV-00042",
+			"upgrade_request": REQUEST,
+			"status": "Ready for review",
+			"reviewed_by": None,
+			"decision_reason": None,
+		},
+	)
+	log_calls = stub_log_error(monkeypatch)
+	monkeypatch.setattr(
+		admin_api, "record_event", lambda *a: (_ for _ in ()).throw(RuntimeError("ledger DB is gone"))
+	)
+
+	result = admin_api.approve_upgrade_request(REQUEST)
+
+	assert result["success"] is True
+	assert "do not retry" in result["warning"].lower()
+	idv = idv_rows(env)[0]
+	# The pre-existing IDV is restored to its pre-decision state, not left
+	# stamped "Approved" and not deleted outright.
+	assert idv["name"] == "IDV-00042"
+	assert idv["status"] == "Ready for review"
+	assert idv["reviewed_by"] is None
+	assert idv["decision_reason"] is None
+	assert env.events == []
+	assert env.fake.rollbacks == 1
+	assert len(log_calls) == 1
 
 
 def test_approve_survives_an_idv_mirror_failure(env, monkeypatch):

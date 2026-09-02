@@ -651,6 +651,16 @@ def approve_upgrade_request(request_id, reason_code=None):
 	# while the request stays misreported as pending review. Same contract as
 	# the alert-audit writes elsewhere on this page: log durably (survives the
 	# pod rolling) and report the approval succeeded, same as it did.
+	#
+	# The mirror and the ledger event are still atomic WITH EACH OTHER, even
+	# though the approval itself already committed above: if the ledger write
+	# throws after `_mirror_decision` already saved, the `idv.save()` from the
+	# mirror is a dangling uncommitted write in this transaction, and since
+	# this function returns success without an error status, frappe's normal
+	# end-of-request commit would otherwise persist it — a mirrored "Approved"
+	# ID Verification with no matching Compliance Audit Event, which nothing
+	# downstream reconciles against. Roll back before anything else touches
+	# the audit trail so a lone half of the pair never survives.
 	try:
 		idv = _mirror_decision(req, "Approved", reason_code, reviewed_at)
 		record_event(
@@ -661,6 +671,7 @@ def approve_upgrade_request(request_id, reason_code=None):
 		)
 		frappe.db.commit()
 	except Exception as exc:
+		frappe.db.rollback()
 		detail = (
 			f"Account for request {request_id} (phone {req.phone_number}) was upgraded to "
 			f"{req.requested_level} and the request is marked Approved, but the ID "

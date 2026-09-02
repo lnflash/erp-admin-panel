@@ -12,6 +12,7 @@ with real (if naive) filter and ``order_by`` semantics, so the hash chain is
 exercised against ordered rows rather than canned return values.
 """
 
+import copy
 import sys
 import types
 from datetime import datetime, timedelta
@@ -173,11 +174,20 @@ class FakeFrappe:
 		self.clock = datetime(2026, 9, 1, 12, 0, 0)
 		self.counter = 0
 		self.commits = 0
+		self.rollbacks = 0
 		self.warnings = []
 		self.errors = []
 		self.conf = {}
 		self.response = {}
 		self.autoname = {}
+		# Writes are applied to `self.tables` immediately (there is no
+		# pending-vs-flushed distinction like a real DB transaction), so
+		# `rollback()` needs its own undo log: a deep-copied checkpoint taken
+		# on every `commit()`, restored wholesale on `rollback()`. This lets
+		# tests exercise "a write made after the last commit must not survive
+		# an exception" the same way frappe's real request-cycle commit/
+		# rollback would.
+		self._checkpoint = self._snapshot()
 
 	# -- clock --------------------------------------------------------------
 	def now_datetime(self):
@@ -284,6 +294,20 @@ class FakeFrappe:
 
 	def commit(self):
 		self.commits += 1
+		self._checkpoint = self._snapshot()
+
+	def rollback(self):
+		self.rollbacks += 1
+		# Restore from a fresh deep copy, not the checkpoint's own objects —
+		# otherwise a write made after this rollback would mutate the
+		# checkpoint in place and corrupt the next rollback.
+		tables, singles, counter = self._checkpoint
+		self.tables = copy.deepcopy(tables)
+		self.singles = copy.deepcopy(singles)
+		self.counter = counter
+
+	def _snapshot(self):
+		return copy.deepcopy(self.tables), copy.deepcopy(self.singles), self.counter
 
 	def throw(self, msg, *args, **kwargs):
 		raise Thrown(msg)
@@ -306,6 +330,7 @@ def fake(monkeypatch):
 		exists=store.exists,
 		count=store.count,
 		commit=store.commit,
+		rollback=store.rollback,
 	)
 	monkeypatch.setattr(frappe, "db", db, raising=False)
 	monkeypatch.setattr(frappe, "get_doc", store.get_doc, raising=False)
