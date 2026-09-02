@@ -12,7 +12,8 @@ other:
 
 * ``BRIDGE_KYC_ALLOWLIST`` — the alpha-2 codes seeded as ``flash_allowed = 1``.
   Chosen by the operator (2026-09-01): the Caribbean, US/CA/GB, MX, SV, SN and
-  KE. Haiti and Cuba are deliberately absent. Kenya is included on the
+  KE; plus the NANP US territories PR/VI/GU/AS/MP. Haiti and Cuba are
+  deliberately absent. Kenya is included on the
   operator's instruction although Bridge's published table marks KE as not
   eligible for US ACH/FedWire — if Kenyan users get "not authorized to create
   USD Virtual Accounts" after approval, uncheck KE in the list.

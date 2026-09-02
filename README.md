@@ -88,7 +88,8 @@ in-app message that US virtual accounts aren't available there yet.
 
 - Toggle the **Flash Allowed** checkbox per country; changes reach the api
   within a minute, no deploy.
-- The seed list (2026-09-01) is the Caribbean, US/CA/GB, MX, SV, SN and KE
+- The seed list (2026-09-01) is the Caribbean, US/CA/GB, MX, SV, SN and KE;
+  plus the NANP US territories PR/VI/GU/AS/MP
   (`kyc_allowlist.BRIDGE_KYC_ALLOWLIST`). It was applied once by the
   `reseed_bridge_kyc_allowlist` patch; `bench migrate` only adds missing rows
   and refreshes names/tiers afterwards, so operator toggles survive deploys.
