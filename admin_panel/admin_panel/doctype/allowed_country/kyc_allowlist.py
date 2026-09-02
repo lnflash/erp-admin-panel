@@ -60,6 +60,13 @@ BRIDGE_KYC_ALLOWLIST = frozenset(
 		"SV",  # El Salvador
 		"SN",  # Senegal (Dakar)
 		"KE",  # Kenya — see module docstring caveat
+		# US territories in the NANP (Twilio Lookup returns these codes, and
+		# Bridge serves them as US persons) — mirrors flash `bridge.kycGate` seed.
+		"PR",
+		"VI",
+		"GU",
+		"AS",
+		"MP",
 	}
 )
 
@@ -92,6 +99,14 @@ ADDITIONAL_COUNTRIES = [
 	{"iso_code": "SXM", "alpha2_code": "SX", "country_name": "Sint Maarten", "bridge_risk_tier": ""},
 	{"iso_code": "PRI", "alpha2_code": "PR", "country_name": "Puerto Rico", "bridge_risk_tier": ""},
 	{"iso_code": "VIR", "alpha2_code": "VI", "country_name": "U.S. Virgin Islands", "bridge_risk_tier": ""},
+	{"iso_code": "GUM", "alpha2_code": "GU", "country_name": "Guam", "bridge_risk_tier": ""},
+	{"iso_code": "ASM", "alpha2_code": "AS", "country_name": "American Samoa", "bridge_risk_tier": ""},
+	{
+		"iso_code": "MNP",
+		"alpha2_code": "MP",
+		"country_name": "Northern Mariana Islands",
+		"bridge_risk_tier": "",
+	},
 ]
 
 DESCRIPTIVE_FIELDS = ("alpha2_code", "country_name", "bridge_risk_tier")

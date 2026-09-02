@@ -38,7 +38,7 @@ FLASH_CONTRACT_FIELDS = ("alpha2_code", "flash_allowed", "country_name")
 
 # The operator's seed list (2026-09-01): Caribbean + US/CA/GB + MX/SV/SN/KE.
 EXPECTED_ALLOWLIST = frozenset(
-	"JM TT BB BS DO KY AG DM GD KN LC VC BZ GY SR AW CW SX BM TC VG AI MS US CA GB MX SV SN KE".split()
+	"JM TT BB BS DO KY AG DM GD KN LC VC BZ GY SR AW CW SX BM TC VG AI MS US CA GB MX SV SN KE PR VI GU AS MP".split()
 )
 
 ALPHA2 = re.compile(r"^[A-Z]{2}$")
@@ -99,7 +99,7 @@ def test_risk_tier_is_optional_so_territories_without_a_published_tier_can_exist
 
 def test_allowlist_constant_is_exactly_the_operator_seed_list():
 	assert BRIDGE_KYC_ALLOWLIST == EXPECTED_ALLOWLIST
-	assert len(BRIDGE_KYC_ALLOWLIST) == 30
+	assert len(BRIDGE_KYC_ALLOWLIST) == 35
 	# Haiti and Cuba are deliberately absent; India/Nigeria/Pakistan/Bangladesh
 	# too (the 2026-09-01 wave, refused a USD virtual account after approval).
 	for code in ("HT", "CU", "IN", "NG", "PK", "BD"):
@@ -151,6 +151,9 @@ def _prod_like_state(seed_rows):
 			"HT",
 			"PR",
 			"VI",
+			"GU",
+			"AS",
+			"MP",
 		}:
 			continue  # not on prod yet
 		rows[row["iso_code"]] = {**row, "flash_allowed": 0 if row["alpha2_code"] in {"BI", "JP", "TN"} else 1}
@@ -184,6 +187,9 @@ def test_one_shot_reseed_converges_and_is_idempotent():
 		"HT",
 		"PR",
 		"VI",
+		"GU",
+		"AS",
+		"MP",
 	}
 	# Everything not on the allowlist is switched off, including the
 	# operator-added row; allowlisted rows that were already 1 are untouched.
