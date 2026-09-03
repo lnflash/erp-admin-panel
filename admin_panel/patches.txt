@@ -6,3 +6,4 @@
 # Patches added in this section will be executed after doctypes are migrated
 admin_panel.patches.set_fygaro_daily_limit_defaults
 admin_panel.patches.reseed_bridge_kyc_allowlist
+admin_panel.patches.set_referral_rewards_default

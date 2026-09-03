@@ -154,6 +154,12 @@ NAV_GROUPS = (
 			),
 			_doctype("Cashout Settings", "Cashout Settings", "CC", "Cashout fees, rates and limits"),
 			_doctype(
+				"Referral Settings",
+				"Referral Settings",
+				"RS",
+				"Master kill switch for referral reward payouts",
+			),
+			_doctype(
 				"System Funding Log",
 				"System Funding Log",
 				"FL",

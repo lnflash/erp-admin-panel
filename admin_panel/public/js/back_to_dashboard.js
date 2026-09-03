@@ -38,6 +38,7 @@
 		"Compliance Audit Event",
 		"Fygaro Settings",
 		"Cashout Settings",
+		"Referral Settings",
 		"System Funding Log",
 		"System Transfer Log",
 	];
