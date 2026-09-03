@@ -1,0 +1,117 @@
+{
+ "actions": [],
+ "creation": "2026-09-01 20:30:00.000000",
+ "custom": 0,
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "auto_approve_section",
+  "auto_approve_enabled",
+  "auto_approve_levels",
+  "auto_approve_min_score",
+  "auto_approve_sampling_percent",
+  "identity_section",
+  "bridge_kyc_satisfies_identity",
+  "retention_section",
+  "retention_years",
+  "service_section",
+  "idv_service_url"
+ ],
+ "fields": [
+  {
+   "fieldname": "auto_approve_section",
+   "fieldtype": "Section Break",
+   "label": "Auto-Approve"
+  },
+  {
+   "default": "0",
+   "description": "When enabled, verifications scoring at or above the minimum are approved without a reviewer. Off by default.",
+   "fieldname": "auto_approve_enabled",
+   "fieldtype": "Check",
+   "label": "Auto-Approve Enabled"
+  },
+  {
+   "default": "TWO",
+   "description": "Comma-separated requested levels eligible for auto-approve (e.g. TWO or TWO,THREE).",
+   "fieldname": "auto_approve_levels",
+   "fieldtype": "Data",
+   "label": "Auto-Approve Levels"
+  },
+  {
+   "default": "0.9",
+   "description": "Minimum overall score (0-1) for auto-approve.",
+   "fieldname": "auto_approve_min_score",
+   "fieldtype": "Float",
+   "label": "Auto-Approve Minimum Score"
+  },
+  {
+   "default": "10",
+   "description": "Percentage of otherwise auto-approvable verifications routed to a human anyway (0-100).",
+   "fieldname": "auto_approve_sampling_percent",
+   "fieldtype": "Int",
+   "label": "Auto-Approve Sampling (%)"
+  },
+  {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Identity"
+  },
+  {
+   "default": "1",
+   "description": "A completed Bridge KYC counts as verified identity (identity_source = bridge_kyc), skipping document capture.",
+   "fieldname": "bridge_kyc_satisfies_identity",
+   "fieldtype": "Check",
+   "label": "Bridge KYC Satisfies Identity"
+  },
+  {
+   "fieldname": "retention_section",
+   "fieldtype": "Section Break",
+   "label": "Retention"
+  },
+  {
+   "default": "7",
+   "description": "Years evidence objects are kept before the retention job purges them (minimum 1).",
+   "fieldname": "retention_years",
+   "fieldtype": "Int",
+   "label": "Retention (years)"
+  },
+  {
+   "fieldname": "service_section",
+   "fieldtype": "Section Break",
+   "label": "Service"
+  },
+  {
+   "description": "Base URL of the flash-idv service (Phase 1). Empty = checks unavailable.",
+   "fieldname": "idv_service_url",
+   "fieldtype": "Data",
+   "label": "IDV Service URL"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-09-01 20:30:00.000000",
+ "modified_by": "Administrator",
+ "module": "Admin Panel",
+ "name": "ID Verification Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Flash Admin",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

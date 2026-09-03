@@ -111,6 +111,33 @@ def test_workspace_sidebar_lists_every_dashboard_destination():
 	assert not missing, f"{missing} are on the dashboard but missing from the workspace fixture"
 
 
+def test_workspace_link_descriptions_match_the_registry():
+	"""The command palette (nav_core's ``desc``) and the workspace sidebar
+	(this fixture's ``description``) both describe the same destination for
+	the operator. They are hand-maintained in two files, so nothing stops
+	one from being updated without the other — exactly what happened when
+	Allowed Country's palette description ("Countries cleared for
+	onboarding") went stale after the workspace card was reworded to
+	explain the Bridge KYC allowlist, leaving the two surfaces disagreeing
+	about what the doctype does."""
+	workspace_desc = {
+		row["link_to"]: row["description"] for row in WORKSPACE["links"] if row.get("type") == "Link"
+	}
+	mismatched = [
+		(
+			link["route"],
+			link["desc"],
+			workspace_desc.get(link["doctype"] if link["kind"] == "doctype" else link["route"]),
+		)
+		for link in all_links()
+	]
+
+	assert all(desc == ws_desc for _, desc, ws_desc in mismatched), (
+		f"registry/workspace description mismatch: "
+		f"{[(route, desc, ws_desc) for route, desc, ws_desc in mismatched if desc != ws_desc]}"
+	)
+
+
 def test_workspace_cards_match_the_registry_groups():
 	breaks = [row["label"] for row in WORKSPACE["links"] if row.get("type") == "Card Break"]
 	cards = [

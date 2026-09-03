@@ -16,7 +16,7 @@ bench install-app admin_panel
 
 #### DocTypes
 
-App-owned DocTypes (`User Alerts`, `Account Upgrade Request`) are defined as module-level JSON files, not fixtures:
+App-owned DocTypes (`User Alerts`, `Account Upgrade Request`, the ID-verification set below, …) are defined as module-level JSON files, not fixtures:
 
 ```
 admin_panel/admin_panel/doctype/
@@ -41,6 +41,10 @@ admin_panel/admin_panel/doctype/
 1. Create `admin_panel/admin_panel/doctype/{doctype_name}/` with `{doctype_name}.json`, `{doctype_name}.py`, and `__init__.py`
 2. Set `"custom": 0` and `"module": "Admin Panel"` in the JSON
 3. Follow the same deploy + migrate flow above
+
+#### ID verification (Phase 0)
+
+The upgrade-request review is backed by `ID Verification` (one per request, with `Verification Evidence` / `Verification Check` child tables), the `Decision Reason` and `Identity Document Type` registries (seeded from `after_migrate`), the `ID Verification Settings` single, and `Compliance Audit Event` — an append-only, hash-chained ledger written only by `admin_panel.api.compliance_audit.record_event`. Decision endpoints (`approve_upgrade_request`, `reject_upgrade_request`, `request_resubmission`, `get_id_verification`, `get_idv_settings`) live in `admin_panel.api.admin_api`; `verify_audit_chain` / `get_audit_anchor` in `admin_panel.api.compliance_audit`. The daily `post_daily_anchor` scheduler job needs a scheduler worker. Design and Phase 1 scope: [docs/plans/2026-09-01-id-verification-phase0.md](docs/plans/2026-09-01-id-verification-phase0.md).
 
 #### Pages
 
@@ -75,6 +79,28 @@ bench --site {site} export-fixtures --app admin_panel
 ```
 
 This updates `admin_panel/fixtures/workspace.json` and `admin_panel/fixtures/client_script.json`.
+
+#### Bridge KYC country allowlist
+
+The `Allowed Country` list (`/app/allowed-country`, or the **Bridge KYC
+Allowlist** shortcut on the Admin Panel workspace) is the operator-managed gate
+for Bridge KYC — the US virtual account onboarding. The Flash api reads
+`GET /api/resource/Allowed Country?filters=[["flash_allowed","=",1]]` every
+60 seconds and lets a user start KYC only when the country of their verified
+phone number is checked. **Unchecked or missing countries are denied**, with an
+in-app message that US virtual accounts aren't available there yet.
+
+- Toggle the **Flash Allowed** checkbox per country; changes reach the api
+  within a minute, no deploy.
+- The seed list (2026-09-01) is the Caribbean, US/CA/GB, MX, SV, SN and KE;
+  plus the NANP US territories PR/VI/GU/AS/MP
+  (`kyc_allowlist.BRIDGE_KYC_ALLOWLIST`). It was applied once by the
+  `reseed_bridge_kyc_allowlist` patch; `bench migrate` only adds missing rows
+  and refreshes names/tiers afterwards, so operator toggles survive deploys.
+- **Kenya caveat:** Bridge's published country table marks KE as not eligible
+  for US ACH/FedWire. It is seeded on the operator's instruction; if Kenyan
+  users are approved by KYC and then get "not authorized to create USD Virtual
+  Accounts", uncheck KE.
 
 ### Releasing
 
