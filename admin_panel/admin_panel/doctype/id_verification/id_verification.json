@@ -1,0 +1,243 @@
+{
+ "actions": [],
+ "autoname": "format:IDV-{#####}",
+ "creation": "2026-09-01 20:30:00.000000",
+ "custom": 0,
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "upgrade_request",
+  "username",
+  "requested_level",
+  "column_break_status",
+  "status",
+  "identity_source",
+  "overall_score",
+  "checks_section",
+  "checks",
+  "evidence_section",
+  "evidence",
+  "report_section",
+  "report_json",
+  "report_sha256",
+  "bridge_section",
+  "bridge_customer_id",
+  "bridge_snapshot_json",
+  "decision_section",
+  "reviewed_by",
+  "reviewed_at",
+  "column_break_decision",
+  "decision_reason",
+  "reviewer_note",
+  "vendor_section",
+  "vendor",
+  "vendor_applicant_id",
+  "vendor_verdict"
+ ],
+ "fields": [
+  {
+   "description": "The upgrade request this verification belongs to. One verification per request.",
+   "fieldname": "upgrade_request",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Upgrade Request",
+   "options": "Account Upgrade Request",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fetch_from": "upgrade_request.username",
+   "fieldname": "username",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Username",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "upgrade_request.requested_level",
+   "fieldname": "requested_level",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Requested Level",
+   "options": "ZERO\nONE\nTWO\nTHREE",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Checks pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Checks pending\nReady for review\nChecks unavailable\nApproved\nRejected\nResubmit requested"
+  },
+  {
+   "default": "capture",
+   "description": "capture = documents captured in the app; bridge_kyc = identity satisfied by a completed Bridge KYC.",
+   "fieldname": "identity_source",
+   "fieldtype": "Select",
+   "label": "Identity Source",
+   "options": "capture\nbridge_kyc"
+  },
+  {
+   "description": "0-1 aggregate from the automated checks. Set by the flash-idv service (Phase 1).",
+   "fieldname": "overall_score",
+   "fieldtype": "Float",
+   "label": "Overall Score"
+  },
+  {
+   "fieldname": "checks_section",
+   "fieldtype": "Section Break",
+   "label": "Automated Checks"
+  },
+  {
+   "fieldname": "checks",
+   "fieldtype": "Table",
+   "label": "Checks",
+   "options": "Verification Check"
+  },
+  {
+   "fieldname": "evidence_section",
+   "fieldtype": "Section Break",
+   "label": "Evidence"
+  },
+  {
+   "fieldname": "evidence",
+   "fieldtype": "Table",
+   "label": "Evidence",
+   "options": "Verification Evidence"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "report_section",
+   "fieldtype": "Section Break",
+   "label": "Check Report"
+  },
+  {
+   "description": "Raw report from the flash-idv service, as received.",
+   "fieldname": "report_json",
+   "fieldtype": "Long Text",
+   "label": "Report JSON"
+  },
+  {
+   "fieldname": "report_sha256",
+   "fieldtype": "Data",
+   "label": "Report SHA-256"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "bridge_section",
+   "fieldtype": "Section Break",
+   "label": "Bridge KYC"
+  },
+  {
+   "fieldname": "bridge_customer_id",
+   "fieldtype": "Data",
+   "label": "Bridge Customer ID"
+  },
+  {
+   "description": "Snapshot of the Bridge customer KYC payload at decision time.",
+   "fieldname": "bridge_snapshot_json",
+   "fieldtype": "Long Text",
+   "label": "Bridge Snapshot JSON"
+  },
+  {
+   "fieldname": "decision_section",
+   "fieldtype": "Section Break",
+   "label": "Decision"
+  },
+  {
+   "fieldname": "reviewed_by",
+   "fieldtype": "Link",
+   "label": "Reviewed By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reviewed_at",
+   "fieldtype": "Datetime",
+   "label": "Reviewed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_decision",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "decision_reason",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Decision Reason",
+   "options": "Decision Reason"
+  },
+  {
+   "fieldname": "reviewer_note",
+   "fieldtype": "Small Text",
+   "label": "Reviewer Note"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "vendor_section",
+   "fieldtype": "Section Break",
+   "label": "Vendor"
+  },
+  {
+   "default": "none",
+   "fieldname": "vendor",
+   "fieldtype": "Select",
+   "label": "Vendor",
+   "options": "none\nsumsub\nveriff"
+  },
+  {
+   "fieldname": "vendor_applicant_id",
+   "fieldtype": "Data",
+   "label": "Vendor Applicant ID"
+  },
+  {
+   "fieldname": "vendor_verdict",
+   "fieldtype": "Data",
+   "label": "Vendor Verdict"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-01 20:30:00.000000",
+ "modified_by": "Administrator",
+ "module": "Admin Panel",
+ "name": "ID Verification",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flash Admin",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

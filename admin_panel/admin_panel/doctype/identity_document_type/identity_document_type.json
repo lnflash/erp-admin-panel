@@ -1,0 +1,143 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:code",
+ "creation": "2026-09-01 20:30:00.000000",
+ "custom": 0,
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "code",
+  "country",
+  "document_name",
+  "column_break_flags",
+  "enabled",
+  "sample_verified",
+  "vendor_extraction",
+  "recognition_section",
+  "has_mrz",
+  "sides",
+  "base_confidence",
+  "template_keywords"
+ ],
+ "fields": [
+  {
+   "description": "Stable identifier, e.g. JM_PASSPORT.",
+   "fieldname": "code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Code",
+   "reqd": 1,
+   "set_only_once": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "country",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Country",
+   "options": "Country",
+   "reqd": 1
+  },
+  {
+   "fieldname": "document_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Document Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_flags",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "description": "Accepted as identity evidence. Disabled types are rejected with RESUBMIT_WRONG_DOCUMENT.",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Enabled"
+  },
+  {
+   "default": "0",
+   "description": "A real sample has been run through the checks and the template keywords verified.",
+   "fieldname": "sample_verified",
+   "fieldtype": "Check",
+   "label": "Sample Verified"
+  },
+  {
+   "default": "0",
+   "description": "Field extraction is delegated to the configured vendor for this type.",
+   "fieldname": "vendor_extraction",
+   "fieldtype": "Check",
+   "label": "Vendor Extraction"
+  },
+  {
+   "fieldname": "recognition_section",
+   "fieldtype": "Section Break",
+   "label": "Recognition"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_mrz",
+   "fieldtype": "Check",
+   "label": "Has MRZ"
+  },
+  {
+   "default": "1",
+   "fieldname": "sides",
+   "fieldtype": "Select",
+   "label": "Sides",
+   "options": "1\n2"
+  },
+  {
+   "default": "0.5",
+   "description": "Starting confidence the checks assign to a document recognised as this type (0-1).",
+   "fieldname": "base_confidence",
+   "fieldtype": "Float",
+   "label": "Base Confidence"
+  },
+  {
+   "description": "One keyword or phrase per line that identifies this document in OCR output.",
+   "fieldname": "template_keywords",
+   "fieldtype": "Small Text",
+   "label": "Template Keywords"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-01 20:30:00.000000",
+ "modified_by": "Administrator",
+ "module": "Admin Panel",
+ "name": "Identity Document Type",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flash Admin",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -149,6 +149,21 @@ def get_transfer_pulse():
 	}
 
 
+def _processed_since(since):
+	"""Approved/Rejected upgrade requests decided since ``since``.
+
+	Prefers the ``reviewed_at`` stamp; falls back to ``modified`` only for
+	rows that predate the stamp (``reviewed_at`` NULL).
+	"""
+	decided = {"status": ["in", ["Approved", "Rejected"]]}
+	stamped = frappe.db.count("Account Upgrade Request", {**decided, "reviewed_at": [">=", since]})
+	legacy = frappe.db.count(
+		"Account Upgrade Request",
+		{**decided, "reviewed_at": ["is", "not set"], "modified": [">=", since]},
+	)
+	return stamped + legacy
+
+
 @frappe.whitelist()
 @require_admin()
 @handle_api_errors
@@ -164,13 +179,11 @@ def get_upgrade_pulse():
 	week_ago = frappe.utils.add_days(frappe.utils.now_datetime(), -7)
 	return {
 		"pending": frappe.db.count("Account Upgrade Request", {"status": "Pending"}),
-		# Approximation: `modified` bumps on ANY re-save of an already
-		# processed request (e.g. phone sync), not just the approve/reject
-		# transition — the doctype records no processed-at timestamp.
-		"processed_week": frappe.db.count(
-			"Account Upgrade Request",
-			{"status": ["in", ["Approved", "Rejected"]], "modified": [">=", week_ago]},
-		),
+		# `reviewed_at` is stamped by the approve/reject transition and never
+		# moves again. Requests decided before it existed have it NULL, and
+		# for those `modified` is the only signal — an approximation, since
+		# it bumps on ANY re-save (e.g. phone sync), not just the decision.
+		"processed_week": _processed_since(week_ago),
 		"oldest_at": str(oldest[0].creation) if oldest else None,
 		"oldest_who": (oldest[0].username or oldest[0].name) if oldest else None,
 		"now": str(frappe.utils.now_datetime()),

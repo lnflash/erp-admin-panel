@@ -1,0 +1,133 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-09-01 20:30:00.000000",
+ "custom": 0,
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "event_type",
+  "actor",
+  "created_at",
+  "column_break_ref",
+  "reference_doctype",
+  "reference_name",
+  "payload_section",
+  "payload_json",
+  "payload_sha256",
+  "chain_section",
+  "prev_hash",
+  "hash"
+ ],
+ "fields": [
+  {
+   "fieldname": "event_type",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Event Type",
+   "reqd": 1
+  },
+  {
+   "description": "Frappe user that performed the action (frappe.session.user at write time).",
+   "fieldname": "actor",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Actor",
+   "reqd": 1
+  },
+  {
+   "description": "Indexed: _head_hash's SELECT ... ORDER BY created_at ... FOR UPDATE must be able to seek the newest row rather than scan-and-lock the whole table as the ledger grows.",
+   "fieldname": "created_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Created At",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "column_break_ref",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Reference DocType"
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Reference Name"
+  },
+  {
+   "fieldname": "payload_section",
+   "fieldtype": "Section Break",
+   "label": "Payload"
+  },
+  {
+   "description": "Canonical JSON (sorted keys, no whitespace) of the event payload.",
+   "fieldname": "payload_json",
+   "fieldtype": "Long Text",
+   "label": "Payload JSON"
+  },
+  {
+   "fieldname": "payload_sha256",
+   "fieldtype": "Data",
+   "label": "Payload SHA-256"
+  },
+  {
+   "fieldname": "chain_section",
+   "fieldtype": "Section Break",
+   "label": "Hash Chain"
+  },
+  {
+   "description": "Hash of the previous row, or GENESIS for the first row.",
+   "fieldname": "prev_hash",
+   "fieldtype": "Data",
+   "label": "Previous Hash"
+  },
+  {
+   "fieldname": "hash",
+   "fieldtype": "Data",
+   "label": "Hash",
+   "unique": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-02 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Admin Panel",
+ "name": "Compliance Audit Event",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager"
+  },
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager"
+  },
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flash Admin"
+  }
+ ],
+ "sort_field": "created_at",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

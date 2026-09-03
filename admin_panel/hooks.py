@@ -143,6 +143,17 @@ app_include_js = "/assets/admin_panel/js/back_to_dashboard.js"
 
 # Scheduled Tasks
 # ---------------
+# Only `daily` is enabled. These fire ONLY when a scheduler worker is running
+# (`bench schedule` / the scheduler container) and the site's scheduler is not
+# paused — without one post_daily_anchor never runs and nothing warns about it.
+
+scheduler_events = {
+	"daily": [
+		# Publish the compliance ledger's chain head to the ops Discord webhook
+		# (site_config `ops_discord_webhook_url`); no-op when unset.
+		"admin_panel.api.compliance_audit.post_daily_anchor",
+	],
+}
 
 # scheduler_events = {
 # 	"all": [
