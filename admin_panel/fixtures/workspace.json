@@ -11,7 +11,7 @@
   }
  ],
  "charts_data": null,
- "content": "[{\"id\": \"_EYFml0tr6\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Admin Panel</b></span>\", \"col\": 12}}, {\"id\": \"_bridgeTotalCard\", \"type\": \"number_card\", \"data\": {\"card_name\": \"Bridge Total\", \"col\": 4}}, {\"id\": \"_bridgeFailedCard\", \"type\": \"number_card\", \"data\": {\"card_name\": \"Bridge Failed Audits\", \"col\": 4}}, {\"id\": \"_bridgeVolumeChart\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Bridge Volume\", \"col\": 6}}, {\"id\": \"_bridgeFailureChart\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Bridge Audit Failures\", \"col\": 6}}, {\"id\": \"_cardMoneymovement\", \"type\": \"card\", \"data\": {\"card_name\": \"Money movement\", \"col\": 12}}, {\"id\": \"_cardAccounts\", \"type\": \"card\", \"data\": {\"card_name\": \"Accounts\", \"col\": 12}}, {\"id\": \"_cardGrowth\", \"type\": \"card\", \"data\": {\"card_name\": \"Growth\", \"col\": 12}}, {\"id\": \"_cardCompliance\", \"type\": \"card\", \"data\": {\"card_name\": \"Compliance\", \"col\": 12}}, {\"id\": \"_cardSettingsandaudit\", \"type\": \"card\", \"data\": {\"card_name\": \"Settings and audit\", \"col\": 12}}]",
+ "content": "[{\"id\": \"_EYFml0tr6\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Admin Panel</b></span>\", \"col\": 12}}, {\"id\": \"_bridgeKycAllowlist\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bridge KYC Allowlist\", \"col\": 4}}, {\"id\": \"_bridgeTotalCard\", \"type\": \"number_card\", \"data\": {\"card_name\": \"Bridge Total\", \"col\": 4}}, {\"id\": \"_bridgeFailedCard\", \"type\": \"number_card\", \"data\": {\"card_name\": \"Bridge Failed Audits\", \"col\": 4}}, {\"id\": \"_bridgeVolumeChart\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Bridge Volume\", \"col\": 6}}, {\"id\": \"_bridgeFailureChart\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Bridge Audit Failures\", \"col\": 6}}, {\"id\": \"_cardMoneymovement\", \"type\": \"card\", \"data\": {\"card_name\": \"Money movement\", \"col\": 12}}, {\"id\": \"_cardAccounts\", \"type\": \"card\", \"data\": {\"card_name\": \"Accounts\", \"col\": 12}}, {\"id\": \"_cardGrowth\", \"type\": \"card\", \"data\": {\"card_name\": \"Growth\", \"col\": 12}}, {\"id\": \"_cardCompliance\", \"type\": \"card\", \"data\": {\"card_name\": \"Compliance\", \"col\": 12}}, {\"id\": \"_cardSettingsandaudit\", \"type\": \"card\", \"data\": {\"card_name\": \"Settings and audit\", \"col\": 12}}]",
  "custom_app": null,
  "for_user": null,
  "hide_custom": 0,
@@ -382,7 +382,7 @@
   },
   {
    "dependencies": null,
-   "description": "Countries cleared for onboarding",
+   "description": "Bridge KYC country allowlist: checked = may start KYC",
    "hidden": 0,
    "icon": "payment",
    "is_query_report": 0,
@@ -525,7 +525,26 @@
  "public": 1,
  "restrict_to_domain": null,
  "roles": [],
- "shortcuts": [],
+ "shortcuts": [
+  {
+   "color": "Green",
+   "doc_view": "List",
+   "format": "{} countries",
+   "icon": "globe",
+   "label": "Bridge KYC Allowlist",
+   "link_to": "Allowed Country",
+   "type": "DocType",
+   "stats_filter": "{\"flash_allowed\": 1}",
+   "parent": "Admin Panel",
+   "parentfield": "shortcuts",
+   "parenttype": "Workspace",
+   "restrict_to_domain": null,
+   "url": null,
+   "report_ref_doctype": null,
+   "kanban_board": null,
+   "only_for": null
+  }
+ ],
  "sort_field": "modified",
  "sort_order": "ASC",
  "starts_with": null,

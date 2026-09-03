@@ -110,7 +110,12 @@ NAV_GROUPS = (
 		"title": "Compliance",
 		"links": (
 			_page("Bridge KYC", "bridge-kyc", "BK", "Live Bridge KYC status for every customer"),
-			_doctype("Allowed Country", "Allowed Country", "AC", "Countries cleared for onboarding"),
+			_doctype(
+				"Allowed Country",
+				"Allowed Country",
+				"AC",
+				"Bridge KYC country allowlist: checked = may start KYC",
+			),
 			_doctype("System Watchlist", "System Watchlist", "SW", "Flagged wallets under active watch"),
 		),
 	},

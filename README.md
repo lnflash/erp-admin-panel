@@ -76,6 +76,28 @@ bench --site {site} export-fixtures --app admin_panel
 
 This updates `admin_panel/fixtures/workspace.json` and `admin_panel/fixtures/client_script.json`.
 
+#### Bridge KYC country allowlist
+
+The `Allowed Country` list (`/app/allowed-country`, or the **Bridge KYC
+Allowlist** shortcut on the Admin Panel workspace) is the operator-managed gate
+for Bridge KYC — the US virtual account onboarding. The Flash api reads
+`GET /api/resource/Allowed Country?filters=[["flash_allowed","=",1]]` every
+60 seconds and lets a user start KYC only when the country of their verified
+phone number is checked. **Unchecked or missing countries are denied**, with an
+in-app message that US virtual accounts aren't available there yet.
+
+- Toggle the **Flash Allowed** checkbox per country; changes reach the api
+  within a minute, no deploy.
+- The seed list (2026-09-01) is the Caribbean, US/CA/GB, MX, SV, SN and KE;
+  plus the NANP US territories PR/VI/GU/AS/MP
+  (`kyc_allowlist.BRIDGE_KYC_ALLOWLIST`). It was applied once by the
+  `reseed_bridge_kyc_allowlist` patch; `bench migrate` only adds missing rows
+  and refreshes names/tiers afterwards, so operator toggles survive deploys.
+- **Kenya caveat:** Bridge's published country table marks KE as not eligible
+  for US ACH/FedWire. It is seeded on the operator's instruction; if Kenyan
+  users are approved by KYC and then get "not authorized to create USD Virtual
+  Accounts", uncheck KE.
+
 ### Releasing
 
 Releases are versioned with git tags and published as a multi-arch Docker image (`brh28/frappe-flash`).
